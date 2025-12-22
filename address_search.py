@@ -3,7 +3,7 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit,
     QComboBox, QPushButton, QGridLayout, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QSizePolicy, QProgressBar, QInputDialog
+    QSizePolicy, QProgressBar, QInputDialog, QTabWidget
 )
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 import os
@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 import csv
 import datetime
 import time
+
 
 
 # Numeric-aware table item: stores numeric value in UserRole and compares numerically
@@ -221,7 +222,27 @@ class VWorldAdmCodeGUI(QWidget):
         layout.addWidget(self.status_label, 5, 0)
         layout.addWidget(self.progress_bar, 5, 1)
 
-        self.setLayout(layout)
+        # Put existing real-estate layout into first tab and add an economic-indicators tab
+        self.tabs = QTabWidget()
+        tab_real = QWidget()
+        tab_real.setLayout(layout)
+
+        tab_econ = QWidget()
+        econ_layout = QGridLayout()
+        # 경제지표 탭: 한국은행 API Key 입력창 추가 (기본값 설정)
+        econ_label = QLabel("한국은행 인증키:")
+        self.edit_bok_key = QLineEdit("TZ9P9GAR03LBXV2J3QGU")
+        self.edit_bok_key.setPlaceholderText("한국은행 Open API 인증키")
+        econ_layout.addWidget(econ_label, 0, 0)
+        econ_layout.addWidget(self.edit_bok_key, 0, 1)
+        tab_econ.setLayout(econ_layout)
+
+        self.tabs.addTab(tab_real, "부동산 거래")
+        self.tabs.addTab(tab_econ, "경제지표")
+
+        main_layout = QGridLayout()
+        main_layout.addWidget(self.tabs, 0, 0)
+        self.setLayout(main_layout)
         self.resize(700, 500)
 
         # 그룹박스 너비를 윈도우 너비의 1/3으로 설정
