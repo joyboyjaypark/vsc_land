@@ -15,6 +15,19 @@ import datetime
 import time
 
 
+# Numeric-aware table item: stores numeric value in UserRole and compares numerically
+class NumericItem(QTableWidgetItem):
+    def __lt__(self, other):
+        try:
+            a = self.data(Qt.UserRole)
+            b = other.data(Qt.UserRole)
+            if a is not None and b is not None:
+                return int(a) < int(b)
+        except Exception:
+            pass
+        return super().__lt__(other)
+
+
 class VWorldAdmCodeGUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -448,10 +461,27 @@ class VWorldAdmCodeGUI(QWidget):
     def on_sigungu_changed(self, index):
         name = self.combo_sigungu.currentText()
         if not name or name in ("선택", "없음"):
-            # show all if '선택' chosen
+            # When user clears 시군구 selection, restore the 시/도-level admCode
+            try:
+                sel_sido = self.combo_sido.currentText()
+                if sel_sido and sel_sido not in ("선택", "없음"):
+                    codes = getattr(self, 'sido_map', {}).get(sel_sido)
+                    if codes:
+                        adm_code_full = codes[0]
+                        if hasattr(self, 'edit_selected_admcode'):
+                            self.edit_selected_admcode.setText(adm_code_full or "")
+                        if hasattr(self, 'edit_apt_lawd') and adm_code_full:
+                            try:
+                                self.edit_apt_lawd.setText(adm_code_full[:5])
+                            except Exception:
+                                pass
+                        # do not proceed with further requests
+                        return
+            except Exception:
+                pass
+            # fallback: clear selection display
             if hasattr(self, 'edit_selected_admcode'):
                 self.edit_selected_admcode.setText("")
-            # table removed; nothing to update
             return
 
         # 선택한 시군구의 admCode(첫번째)로 읍면동 목록 요청
@@ -596,8 +626,54 @@ class VWorldAdmCodeGUI(QWidget):
         from_ym = f"{from_year}{from_month}"
         to_ym = f"{to_year}{to_month}"
 
-        if not key or not lawd or not from_ym or not to_ym:
-            QMessageBox.warning(self, "입력 오류", "Service Key, 지역코드, 조회기간(시작/종료)을 모두 입력하세요.")
+        # Allow searching by selected `시/도` when `지역코드(LAWD_CD)` is not manually provided.
+        # If `lawd` is empty but a `시/도` is selected, construct a list of 5-digit LAWD codes
+        # from `self.sido_map` and iterate over them. Otherwise require `lawd` as before.
+        if not key or not from_ym or not to_ym:
+            QMessageBox.warning(self, "입력 오류", "Service Key와 조회기간(시작/종료)은 필수입니다.")
+            return
+
+        # build lawd_list: prefer explicit 5-digit `lawd` if provided.
+        # If user provided a short code (e.g. '28' from 시/도), treat it as non-specific
+        # and derive 5-digit LAWD codes from `sigungu_map` (or `sido_map` as fallback).
+        lawd_list = []
+        try:
+            sel_sido = self.combo_sido.currentText()
+        except Exception:
+            sel_sido = None
+
+        if lawd and len(lawd) >= 5:
+            lawd_list = [lawd[:5]]
+        else:
+            # derive from sigungu_map if possible
+            try:
+                codes_map = getattr(self, 'sigungu_map', {}) or {}
+                seen = set()
+                if sel_sido and sel_sido not in ("선택", "없음") and codes_map:
+                    # sigungu_map maps names->list(codes)
+                    for lst in codes_map.values():
+                        for c in (lst or []):
+                            if not c:
+                                continue
+                            prefix = (c[:5] or "").strip()
+                            if prefix and prefix not in seen:
+                                seen.add(prefix)
+                                lawd_list.append(prefix)
+                else:
+                    # fallback: try sido_map entries for the selected sido
+                    codes = getattr(self, 'sido_map', {}).get(sel_sido) or []
+                    for c in codes:
+                        if not c:
+                            continue
+                        prefix = (c[:5] or "").strip()
+                        if prefix and prefix not in seen:
+                            seen.add(prefix)
+                            lawd_list.append(prefix)
+            except Exception:
+                lawd_list = []
+
+        if not lawd_list:
+            QMessageBox.warning(self, "입력 오류", "지역코드가 없거나 선택된 시/도가 없습니다. 지역코드를 입력하거나 시/도를 선택하세요.")
             return
 
         # prevent duplicate start if worker already running
@@ -634,9 +710,10 @@ class VWorldAdmCodeGUI(QWidget):
         api_url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
         # serviceKey: decode percent-encoding before passing to `params`
         # to avoid double-encoding by `requests` (matches browser behavior).
+        # Show an example final URL using the first LAWD code
         params = {
             "serviceKey": requests.utils.unquote(key),
-            "LAWD_CD": lawd,
+            "LAWD_CD": (lawd_list[0] if lawd_list else lawd),
             "DEAL_YMD": from_ym,
             "pageNo": "1",
             "numOfRows": "1000",
@@ -656,9 +733,10 @@ class VWorldAdmCodeGUI(QWidget):
         total_months = len(months)
         # 준비: 진행바 설정 및 버튼 비활성화
         try:
-            self.progress_bar.setMaximum(total_months)
+            total_steps = total_months * max(1, len(lawd_list))
+            self.progress_bar.setMaximum(total_steps)
             self.progress_bar.setValue(0)
-            self.status_label.setText(f"진행: 0/{total_months}")
+            self.status_label.setText(f"진행: 0/{total_steps}")
         except Exception:
             pass
         self.btn_apt_fetch.setEnabled(False)
@@ -666,17 +744,18 @@ class VWorldAdmCodeGUI(QWidget):
 
         # Run data fetching in a worker thread to avoid blocking the UI
         try:
-            self.progress_bar.setMaximum(total_months)
+            total_steps = total_months * max(1, len(lawd_list))
+            self.progress_bar.setMaximum(total_steps)
             self.progress_bar.setValue(0)
-            self.status_label.setText(f"진행: 0/{total_months}")
+            self.status_label.setText(f"진행: 0/{total_steps}")
         except Exception:
             pass
 
         self.btn_apt_fetch.setEnabled(False)
         self.btn_apt_save.setEnabled(False)
 
-        # create worker
-        self._apt_worker = AptFetchWorker(lawd, months, key)
+        # create worker (pass list of LAWD codes)
+        self._apt_worker = AptFetchWorker(lawd_list, months, key)
 
         def _on_progress(cur, total):
             try:
@@ -696,6 +775,14 @@ class VWorldAdmCodeGUI(QWidget):
                         return datetime.date(y, mo, d)
                     except Exception:
                         return datetime.date.min
+                # If 읍면동 콤보에 값이 선택되어 있으면, 법정동(컬럼 인덱스 7)과 같은 행만 남깁니다.
+                try:
+                    sel_dong = self.combo_dong.currentText()
+                    if sel_dong and sel_dong not in ("선택", "없음"):
+                        rows = [r for r in rows if (r[7] or "").strip() == sel_dong]
+                except Exception:
+                    pass
+
                 # trade_date is at column index 3 in worker row structure
                 rows.sort(key=lambda r: _parse_date(r[3] if len(r) > 3 else ""))
                 self.apt_rows_master = rows
@@ -703,7 +790,11 @@ class VWorldAdmCodeGUI(QWidget):
                 self.populate_apt_table(rows)
                 self.btn_apt_save.setEnabled(bool(rows))
                 self.status_label.setText(f"완료: {len(rows)}건")
-                self.progress_bar.setValue(total_months)
+                try:
+                    # set progress to full (maximum may be months * LAWD count)
+                    self.progress_bar.setValue(self.progress_bar.maximum())
+                except Exception:
+                    pass
             finally:
                 self.btn_apt_fetch.setEnabled(True)
                 self.btn_apt_cancel.setEnabled(False)
@@ -960,7 +1051,28 @@ class VWorldAdmCodeGUI(QWidget):
                     txt = val if isinstance(val, str) else str(val)
                 except Exception:
                     txt = ""
-                self.apt_table.setItem(r, c, QTableWidgetItem(txt))
+                # format 거래금액(만원) column with thousand separators (column index 4)
+                if c == 4:
+                    num_val = None
+                    try:
+                        import re
+                        digits = re.sub(r"[^0-9]", "", txt)
+                        if digits:
+                            num_val = int(digits)
+                            txt = f"{num_val:,}"
+                    except Exception:
+                        num_val = None
+                    try:
+                        if num_val is not None:
+                            it = NumericItem(txt)
+                            it.setData(Qt.UserRole, num_val)
+                        else:
+                            it = QTableWidgetItem(txt)
+                    except Exception:
+                        it = QTableWidgetItem(txt)
+                    self.apt_table.setItem(r, c, it)
+                else:
+                    self.apt_table.setItem(r, c, QTableWidgetItem(txt))
         try:
             self.apt_table.setSortingEnabled(was_sorting)
         except Exception:
@@ -1177,7 +1289,28 @@ class AptTradeGUI(QWidget):
                     txt = val if isinstance(val, str) else str(val)
                 except Exception:
                     txt = ""
-                self.table.setItem(r, c, QTableWidgetItem(txt))
+                # format 거래금액(만원) column with thousand separators (column index 4)
+                if c == 4:
+                    num_val = None
+                    try:
+                        import re
+                        digits = re.sub(r"[^0-9]", "", txt)
+                        if digits:
+                            num_val = int(digits)
+                            txt = f"{num_val:,}"
+                    except Exception:
+                        num_val = None
+                    try:
+                        if num_val is not None:
+                            it = NumericItem(txt)
+                            it.setData(Qt.UserRole, num_val)
+                        else:
+                            it = QTableWidgetItem(txt)
+                    except Exception:
+                        it = QTableWidgetItem(txt)
+                    self.table.setItem(r, c, it)
+                else:
+                    self.table.setItem(r, c, QTableWidgetItem(txt))
         try:
             self.table.setSortingEnabled(was_sorting)
         except Exception:
@@ -1247,19 +1380,24 @@ class AptFetchWorker(QThread):
 
     def __init__(self, lawd, months, service_key, parent=None):
         super().__init__(parent)
-        self.lawd = lawd
+        # `lawd` may be a single LAWD string or a list of LAWD strings.
+        if isinstance(lawd, (list, tuple)):
+            self.lawd_list = list(lawd)
+        else:
+            self.lawd_list = [lawd]
         self.months = months
         self.service_key = service_key
         self._stop = False
 
     def stop(self):
-        # signal to stop after current month finishes
+        # signal to stop after current request finishes
         self._stop = True
 
     def run(self):
         import requests, xml.etree.ElementTree as ET, time, re
         rows = []
-        total = len(self.months)
+        # total progress is (#lawd * #months); guard against zero
+        total = max(1, len(self.months) * max(1, len([l for l in self.lawd_list if l])))
         logs_dir = os.path.join(os.getcwd(), "debug_logs")
         try:
             os.makedirs(logs_dir, exist_ok=True)
@@ -1308,77 +1446,84 @@ class AptFetchWorker(QThread):
             except Exception:
                 return s
 
-        for i, ym in enumerate(self.months, start=1):
-            if getattr(self, '_stop', False):
-                # emit error to indicate cancellation
-                self.error.emit('취소됨')
-                return
-            url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
-            params = {
-                "serviceKey": requests.utils.unquote(self.service_key),
-                "LAWD_CD": self.lawd,
-                "DEAL_YMD": ym,
-                "pageNo": "1",
-                "numOfRows": "1000",
-            }
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-                "Accept": "application/xml, text/xml, */*;q=0.01",
-            }
-            try:
-                resp = requests.get(url, params=params, timeout=30, headers=headers)
-                resp.raise_for_status()
-            except Exception as e:
-                self.error.emit(str(e))
-                return
-            if getattr(self, '_stop', False):
-                self.error.emit('취소됨')
-                return
-            # save raw response
-            try:
-                ts = int(time.time())
-                fname = os.path.join(logs_dir, f"debug_response_{self.lawd}_{ym}_{ts}.xml")
-                with open(fname, "wb") as fw:
-                    fw.write(resp.content)
-                meta = os.path.join(logs_dir, f"debug_response_{self.lawd}_{ym}_{ts}.meta.txt")
-                with open(meta, "w", encoding='utf-8') as fm:
-                    fm.write(f"url: {resp.url}\nstatus: {resp.status_code}\nheaders: {dict(resp.headers)}\n")
-            except Exception:
-                pass
+        step = 0
+        for lawd in self.lawd_list:
+            if not lawd:
+                continue
+            for ym in self.months:
+                if getattr(self, '_stop', False):
+                    self.error.emit('취소됨')
+                    return
+                url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
+                params = {
+                    "serviceKey": requests.utils.unquote(self.service_key),
+                    "LAWD_CD": lawd,
+                    "DEAL_YMD": ym,
+                    "pageNo": "1",
+                    "numOfRows": "1000",
+                }
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+                    "Accept": "application/xml, text/xml, */*;q=0.01",
+                }
+                try:
+                    resp = requests.get(url, params=params, timeout=30, headers=headers)
+                    resp.raise_for_status()
+                except Exception as e:
+                    self.error.emit(str(e))
+                    return
+                if getattr(self, '_stop', False):
+                    self.error.emit('취소됨')
+                    return
+                # save raw response
+                try:
+                    ts = int(time.time())
+                    fname = os.path.join(logs_dir, f"debug_response_{lawd}_{ym}_{ts}.xml")
+                    with open(fname, "wb") as fw:
+                        fw.write(resp.content)
+                    meta = os.path.join(logs_dir, f"debug_response_{lawd}_{ym}_{ts}.meta.txt")
+                    with open(meta, "w", encoding='utf-8') as fm:
+                        fm.write(f"url: {resp.url}\nstatus: {resp.status_code}\nheaders: {dict(resp.headers)}\n")
+                except Exception:
+                    pass
 
-            try:
-                root = ET.fromstring(resp.content)
-            except Exception as e:
-                self.error.emit(f"XML parse error ({ym}): {e}")
-                return
+                try:
+                    root = ET.fromstring(resp.content)
+                except Exception as e:
+                    self.error.emit(f"XML parse error ({ym}): {e}")
+                    return
 
-            items = root.findall("body/items/item")
-            for it in items:
-                trade_date = f"{it.findtext('dealYear') or ''}-{it.findtext('dealMonth') or ''}-{it.findtext('dealDay') or ''}"
-                raw_amount = it.findtext("dealAmount") or ""
-                amount_norm = _norm_amount(raw_amount)
-                rgst_raw = it.findtext("rgstDate") or _find_text(it, ["registDay", "등기일자", "registrationDate", "rgstDate"])
-                rgst_norm = _norm_rgst(rgst_raw)
-                row = [
-                    it.findtext("aptNm") or "",
-                    it.findtext("aptDong") or _find_text(it, ["aptDong", "단지동", "동", "apt_dong"]),
-                    it.findtext("excluUseAr") or "",
-                    trade_date,
-                    amount_norm,
-                    it.findtext("floor") or "",
-                    it.findtext("buildYear") or "",
-                    it.findtext("umdNm") or "",
-                    it.findtext("jibun") or "",
-                    it.findtext("sggCd") or "",
-                    (it.findtext("dealingGbn") or _find_text(it, ["tradeType", "거래유형", "dealType", "dealingGbn"])),
-                    (it.findtext("estateAgentSggNm") or _find_text(it, ["bcnstAddr", "brokerAddr", "중개사소재지", "bcnstc", "estateAgentSggNm"])),
-                    rgst_norm,
-                    (it.findtext("slerGbn") or _find_text(it, ["seller", "거래주체정보_매도자", "매도자", "tradePartSeller", "slerGbn"])),
-                    _find_text(it, ["buyer", "거래주체정보_매수자", "매수자", "tradePartBuyer"]),
-                    _find_text(it, ["rentYn", "토지임대부", "landLease", "isLandLeaseApt"]),
-                ]
-                rows.append(row)
-            self.progress.emit(i, total)
+                items = root.findall("body/items/item")
+                for it in items:
+                    trade_date = f"{it.findtext('dealYear') or ''}-{it.findtext('dealMonth') or ''}-{it.findtext('dealDay') or ''}"
+                    raw_amount = it.findtext("dealAmount") or ""
+                    amount_norm = _norm_amount(raw_amount)
+                    rgst_raw = it.findtext("rgstDate") or _find_text(it, ["registDay", "등기일자", "registrationDate", "rgstDate"])
+                    rgst_norm = _norm_rgst(rgst_raw)
+                    row = [
+                        it.findtext("aptNm") or "",
+                        it.findtext("aptDong") or _find_text(it, ["aptDong", "단지동", "동", "apt_dong"]),
+                        it.findtext("excluUseAr") or "",
+                        trade_date,
+                        amount_norm,
+                        it.findtext("floor") or "",
+                        it.findtext("buildYear") or "",
+                        it.findtext("umdNm") or "",
+                        it.findtext("jibun") or "",
+                        it.findtext("sggCd") or "",
+                        (it.findtext("dealingGbn") or _find_text(it, ["tradeType", "거래유형", "dealType", "dealingGbn"])),
+                        (it.findtext("estateAgentSggNm") or _find_text(it, ["bcnstAddr", "brokerAddr", "중개사소재지", "bcnstc", "estateAgentSggNm"])),
+                        rgst_norm,
+                        (it.findtext("slerGbn") or _find_text(it, ["seller", "거래주체정보_매도자", "매도자", "tradePartSeller", "slerGbn"])),
+                        _find_text(it, ["buyer", "거래주체정보_매수자", "매수자", "tradePartBuyer"]),
+                        _find_text(it, ["rentYn", "토지임대부", "landLease", "isLandLeaseApt"]),
+                    ]
+                    rows.append(row)
+                step += 1
+                try:
+                    self.progress.emit(min(step, total), total)
+                except Exception:
+                    pass
         self.finished.emit(rows)
 
 if __name__ == "__main__":
