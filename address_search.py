@@ -15,6 +15,9 @@ import xml.etree.ElementTree as ET
 import csv
 import datetime
 import time
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from matplotlib.ticker import FuncFormatter
 
 
 
@@ -246,6 +249,11 @@ class VWorldAdmCodeGUI(QWidget):
         lbl_bok_list = QLabel("서비스 통계 목록:")
         self.bok_combo = QComboBox()
         self.bok_combo.setEditable(False)
+        # show up to 20 items in the dropdown popup instead of the default 10
+        try:
+            self.bok_combo.setMaxVisibleItems(20)
+        except Exception:
+            pass
         self.bok_combo.currentIndexChanged.connect(self.on_bok_select)
 
         group_layout.addWidget(lbl_bok_list, 1, 0)
@@ -284,11 +292,15 @@ class VWorldAdmCodeGUI(QWidget):
         # 출력하기 버튼 및 결과 테이블
         self.btn_bok_print = QPushButton("출력하기")
         self.btn_bok_print.clicked.connect(self.on_bok_print)
+        # 차트 생성 버튼
+        self.btn_bok_chart = QPushButton("차트생성")
+        self.btn_bok_chart.clicked.connect(self.on_bok_plot)
         # place group box into econ layout
         group_data1.setLayout(group_layout)
         econ_layout.addWidget(group_data1, 0, 0, 1, 7)
 
         econ_layout.addWidget(self.btn_bok_print, 1, 0)
+        econ_layout.addWidget(self.btn_bok_chart, 1, 1)
 
         self.bok_result_table = QTableWidget()
         self.bok_result_table.setColumnCount(0)
@@ -1136,6 +1148,386 @@ class VWorldAdmCodeGUI(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "표시 실패", f"결과 표에 표시 중 오류:\n{e}")
             return
+
+    def on_bok_plot(self):
+        try:
+            col_count = self.bok_result_table.columnCount()
+            headers = [
+                (self.bok_result_table.horizontalHeaderItem(i).text()
+                 if self.bok_result_table.horizontalHeaderItem(i) else '')
+                for i in range(col_count)
+            ]
+            try:
+                idx_time = headers.index('TIME')
+            except ValueError:
+                idx_time = None
+            try:
+                idx_val = headers.index('DATA_VALUE')
+            except ValueError:
+                idx_val = None
+            try:
+                idx_unit = headers.index('UNIT_NAME')
+            except ValueError:
+                idx_unit = None
+            try:
+                idx_stat = headers.index('STAT_NAME')
+            except ValueError:
+                idx_stat = None
+            try:
+                idx_item1 = headers.index('ITEM_NAME1')
+            except ValueError:
+                idx_item1 = None
+
+            if idx_time is None or idx_val is None:
+                QMessageBox.warning(self, "차트 생성 실패", "TIME 또는 DATA_VALUE 열을 찾을 수 없습니다.")
+                return
+
+            times = []
+            values = []
+            unit = ''
+            stat_name = ''
+            item1 = ''
+            rows = self.bok_result_table.rowCount()
+            for r in range(rows):
+                t_item = self.bok_result_table.item(r, idx_time)
+                v_item = self.bok_result_table.item(r, idx_val)
+                t = t_item.text() if t_item else ''
+                v = v_item.text() if v_item else ''
+                # parse numeric
+                try:
+                    num = float(str(v).replace(',', ''))
+                except Exception:
+                    num = None
+                times.append(t)
+                values.append(num)
+                if idx_unit is not None and not unit:
+                    u_item = self.bok_result_table.item(r, idx_unit)
+                    unit = u_item.text() if u_item else ''
+                if idx_stat is not None and not stat_name:
+                    s_item = self.bok_result_table.item(r, idx_stat)
+                    stat_name = s_item.text() if s_item else ''
+                if idx_item1 is not None and not item1:
+                    it_item = self.bok_result_table.item(r, idx_item1)
+                    item1 = it_item.text() if it_item else ''
+
+            # filter out rows without numeric values
+            filtered = [(t, v) for t, v in zip(times, values) if v is not None]
+            if not filtered:
+                QMessageBox.information(self, "차트 없음", "플롯할 숫자 데이터가 없습니다.")
+                return
+
+            x = list(range(len(filtered)))
+            xticks = [t for t, _ in filtered]
+            y = [v for _, v in filtered]
+
+            # Attempt to set a font that supports Korean on Windows/Mac/Linux
+            try:
+                available = {f.name for f in fm.fontManager.ttflist}
+                candidates = ['Malgun Gothic', '맑은 고딕', 'NanumGothic', 'AppleGothic', 'Noto Sans CJK KR', 'Noto Sans CJK JP', 'DejaVu Sans']
+                use_font = next((c for c in candidates if c in available), None)
+                if use_font:
+                    plt.rcParams['font.family'] = use_font
+                plt.rcParams['axes.unicode_minus'] = False
+            except Exception:
+                pass
+
+            fig = plt.figure(figsize=(8, 4))
+            ax = fig.add_subplot(111)
+            line, = ax.plot(x, y, marker='o', linestyle='-', label='')
+            # force default marker size to 3 for compact visuals; use doubled size when selected
+            marker_size = 3
+            try:
+                line.set_markersize(marker_size)
+            except Exception:
+                try:
+                    plt.rcParams['lines.markersize'] = marker_size
+                except Exception:
+                    pass
+            ax.set_ylabel(unit or '')
+
+            # Reduce number of x-tick labels if too many
+            max_xticks = 20
+            # Prefer year-aligned ticks: for monthly data use January indices; for quarterly use Q1.
+            import re
+            month_indices = []
+            quarter_indices = []
+            for i, t in enumerate(xticks):
+                s = str(t)
+                # YYYYMM e.g., 201901 or 2019-01 variants
+                m = re.match(r"^(\d{4})(\d{2})$", s)
+                if m:
+                    mm = int(m.group(2))
+                    if mm == 1:
+                        month_indices.append(i)
+                    continue
+                # look for patterns like 2019Q1 or 2019-Q1
+                mq = re.search(r"(\d{4})\D*Q(\d)", s, re.IGNORECASE)
+                if mq:
+                    q = int(mq.group(2))
+                    if q == 1:
+                        quarter_indices.append(i)
+
+            if month_indices:
+                cand = month_indices
+            elif quarter_indices:
+                cand = quarter_indices
+            else:
+                cand = list(range(len(x)))
+
+            # If too many candidate ticks, thin them out to respect max_xticks
+            if len(cand) > max_xticks:
+                step = max(1, len(cand) // max_xticks)
+                visible_x = [cand[i] for i in range(0, len(cand), step)]
+            else:
+                visible_x = cand
+
+            # fallback: if visible_x empty, use automatic thinning over full range
+            if not visible_x:
+                if len(x) > max_xticks:
+                    step = max(1, len(x) // max_xticks)
+                    visible_x = x[::step]
+                else:
+                    visible_x = x
+
+            visible_labels = [xticks[i] for i in visible_x]
+
+            ax.set_xticks(visible_x)
+            # shorten labels to avoid overlapping long texts
+            def shorten(s, n=30):
+                s = str(s)
+                return s if len(s) <= n else s[:n-3] + '...'
+
+            # convert TIME-like labels to year only (e.g., 202001->2020, 2010Q1->2010)
+            import re
+            def year_label(t):
+                try:
+                    if not t:
+                        return ''
+                    m = re.search(r'(\d{4})', str(t))
+                    if m:
+                        return m.group(1)
+                    return str(t)
+                except Exception:
+                    return str(t)
+
+            year_labels = [year_label(lbl) for lbl in visible_labels]
+            ax.set_xticklabels([shorten(lbl, 20) for lbl in year_labels], rotation=45, ha='right')
+
+            # bottom label with STAT_NAME and ITEM_NAME1 (truncate if very long)
+            bottom_label = ' '.join(filter(None, [stat_name, item1]))
+            if len(bottom_label) > 120:
+                bottom_label = bottom_label[:117] + '...'
+
+            # use legend to show a colored line/marker before the label, placed below plot
+            try:
+                if bottom_label:
+                    line.set_label(bottom_label)
+                    leg = ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=1, frameon=False)
+                    for text in leg.get_texts():
+                        text.set_fontsize(10)
+            except Exception:
+                # fallback to simple bottom text
+                fig.text(0.5, 0.01, bottom_label, ha='center', fontsize=10)
+
+            # format y-axis ticks with thousands separator
+            try:
+                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, pos: format(int(v), ',') if abs(v - round(v)) < 1e-6 else format(v, ',.2f')))
+            except Exception:
+                pass
+
+            # draw faint major grid lines
+            try:
+                ax.grid(True, which='major', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+            except Exception:
+                pass
+
+            fig.tight_layout(rect=[0, 0.08, 1, 1])
+
+            # Interactive tooltip: show x label and y value when cursor near a point
+            annot = ax.annotate("", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
+                                bbox=dict(boxstyle="round", fc="w"), arrowprops=dict(arrowstyle="->"))
+            annot.set_visible(False)
+
+            def format_num(v):
+                try:
+                    if v is None:
+                        return ''
+                    if abs(v - round(v)) < 1e-6:
+                        return format(int(round(v)), ',')
+                    return format(v, ',.2f')
+                except Exception:
+                    return str(v)
+
+            def update_annot(ind):
+                i = ind
+                x_val = x[i]
+                y_val = y[i]
+                annot.xy = (x_val, y_val)
+                label_x = xticks[i]
+                txt = f"{label_x}\n{format_num(y_val)} {unit if unit else ''}".strip()
+                annot.set_text(txt)
+                annot.get_bbox_patch().set_alpha(0.9)
+
+            # selection state for ctrl-click comparisons
+            selected_idxs = []  # indices into x/y lists
+            sel_artists = []
+            range_annot = fig.text(0.02, 0.95, '', transform=fig.transFigure, va='top', fontsize=9,
+                                   bbox=dict(boxstyle='round', facecolor='w', alpha=0.9))
+            range_annot.set_visible(False)
+
+            def on_move(event):
+                vis = annot.get_visible()
+                if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
+                    # find nearest data index by x distance
+                    xd = event.xdata
+                    # nearest index
+                    i = min(range(len(x)), key=lambda j: abs(x[j] - xd))
+                    # compute pixel distance to decide proximity
+                    xpix, ypix = ax.transData.transform((x[i], y[i]))
+                    dx = xpix - event.x
+                    dy = ypix - event.y
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist < 10:
+                        update_annot(i)
+                        annot.set_visible(True)
+                        fig.canvas.draw_idle()
+                    else:
+                        if vis:
+                            annot.set_visible(False)
+                            fig.canvas.draw_idle()
+                else:
+                    if vis:
+                        annot.set_visible(False)
+                        fig.canvas.draw_idle()
+
+            def on_click(event):
+                # Left-click to select/deselect a data point (no modifier needed)
+                try:
+                    if event.inaxes != ax or event.button != 1:
+                        return
+                    # No modifier required: simple left-click on/near a point selects it
+                    xd = event.xdata
+                    if xd is None:
+                        return
+                    i = min(range(len(x)), key=lambda j: abs(x[j] - xd))
+                    xpix, ypix = ax.transData.transform((x[i], y[i]))
+                    dx = xpix - event.x
+                    dy = ypix - event.y
+                    dist = (dx * dx + dy * dy) ** 0.5
+                    if dist >= 10:
+                        return
+
+                    # toggle selection
+                    if i in selected_idxs:
+                        # deselect
+                        idx = selected_idxs.index(i)
+                        selected_idxs.pop(idx)
+                        art = sel_artists.pop(idx)
+                        try:
+                            art.remove()
+                        except Exception:
+                            pass
+                    else:
+                        # add selection (limit to 2)
+                        if len(selected_idxs) >= 2:
+                            # remove oldest
+                            selected_idxs.pop(0)
+                            art = sel_artists.pop(0)
+                            try:
+                                art.remove()
+                            except Exception:
+                                pass
+                        selected_idxs.append(i)
+                        # mark selected point: double size and filled red
+                        art, = ax.plot(x[i], y[i], marker='o', markersize=marker_size*2, markerfacecolor='red', markeredgecolor='red', markeredgewidth=1.0)
+                        sel_artists.append(art)
+                        # activate the selected point: show annotation for it
+                        try:
+                            update_annot(i)
+                            annot.set_visible(True)
+                        except Exception:
+                            pass
+
+                    # when two points selected, compute stats
+                    if len(selected_idxs) == 2:
+                        i1, i2 = selected_idxs[0], selected_idxs[1]
+                        # ensure chronological order by x index
+                        if i1 > i2:
+                            i1, i2 = i2, i1
+                        v1 = y[i1]
+                        v2 = y[i2]
+                        lbl1 = xticks[i1]
+                        lbl2 = xticks[i2]
+
+                        def parse_year_month(t):
+                            # return (year, month) with month starting at 1
+                            try:
+                                s = str(t).strip()
+                                # YYYYMM
+                                if len(s) >= 6 and s[:6].isdigit():
+                                    y = int(s[:4]); m = int(s[4:6]); return (y, m)
+                                # YYYYQn or YYYY-Qn
+                                import re
+                                m_qu = re.match(r"^(\d{4})\D*Q(\d)", s, re.IGNORECASE)
+                                if m_qu:
+                                    y = int(m_qu.group(1)); q = int(m_qu.group(2)); month = (q - 1) * 3 + 1; return (y, month)
+                                # YYYY
+                                if len(s) >= 4 and s[:4].isdigit():
+                                    y = int(s[:4]); return (y, 1)
+                                return (None, None)
+                            except Exception:
+                                return (None, None)
+
+                        y1, m1 = parse_year_month(lbl1)
+                        y2, m2 = parse_year_month(lbl2)
+                        years = None
+                        if y1 is not None and y2 is not None:
+                            months_diff = (y2 - y1) * 12 + (m2 - m1)
+                            years = months_diff / 12.0 if months_diff != 0 else 0
+
+                        pct = None
+                        cagr = None
+                        if v1 is not None and v2 is not None and v1 != 0:
+                            try:
+                                pct = (v2 - v1) / v1 * 100.0
+                            except Exception:
+                                pct = None
+                        if pct is not None and years and years > 0 and v1 > 0:
+                            try:
+                                cagr = ( (v2 / v1) ** (1.0 / years) - 1.0 ) * 100.0
+                            except Exception:
+                                cagr = None
+
+                        def fmt(v):
+                            try:
+                                if v is None:
+                                    return 'N/A'
+                                if abs(v - round(v)) < 1e-6:
+                                    return format(int(round(v)), ',')
+                                return format(v, ',.2f')
+                            except Exception:
+                                return str(v)
+
+                        pct_txt = f"{pct:.2f}%" if pct is not None else 'N/A'
+                        cagr_txt = f"{cagr:.2f}%" if cagr is not None else 'N/A'
+                        yrs_txt = f"{years:.2f}년" if years is not None else 'N/A'
+
+                        range_text = f"기간: {lbl1} → {lbl2}\n기간 차이: {yrs_txt}\n증가율: {pct_txt}\n연평균: {cagr_txt}"
+                        range_annot.set_text(range_text)
+                        range_annot.set_visible(True)
+                        fig.canvas.draw_idle()
+                    else:
+                        # fewer than 2 selections: hide range box
+                        range_annot.set_visible(False)
+                        fig.canvas.draw_idle()
+                except Exception:
+                    pass
+
+            fig.canvas.mpl_connect("motion_notify_event", on_move)
+            fig.canvas.mpl_connect("button_press_event", on_click)
+            plt.show()
+        except Exception as e:
+            QMessageBox.warning(self, "차트 생성 오류", f"오류:\n{e}")
 
     def on_bok_select(self):
         sel = self.bok_combo.currentIndex()
