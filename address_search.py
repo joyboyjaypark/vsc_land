@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QPushButton, QGridLayout, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
     QSizePolicy, QProgressBar, QInputDialog, QTabWidget,
+    QVBoxLayout, QTextEdit,
 )
 from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
@@ -230,59 +231,38 @@ class VWorldAdmCodeGUI(QWidget):
 
         tab_econ = QWidget()
         econ_layout = QGridLayout()
+        # Group box to contain inputs (Data 1)
+        group_data1 = QGroupBox("Data 1")
+        group_layout = QGridLayout()
         # 경제지표 탭: 간소화된 UI — 인증키 입력 + 결과 콤보
         lbl_bok_key = QLabel("한국은행 인증키:")
         self.edit_bok_key = QLineEdit("TZ9P9GAR03LBXV2J3QGU")
         self.edit_bok_key.setPlaceholderText("한국은행 Open API 인증키")
 
-        econ_layout.addWidget(lbl_bok_key, 0, 0)
-        econ_layout.addWidget(self.edit_bok_key, 0, 1)
+        group_layout.addWidget(lbl_bok_key, 0, 0)
+        group_layout.addWidget(self.edit_bok_key, 0, 1)
 
         # 콤보 제목
-        lbl_bok_list = QLabel("한국은행 서비스 통계 목록:")
+        lbl_bok_list = QLabel("서비스 통계 목록:")
         self.bok_combo = QComboBox()
         self.bok_combo.setEditable(False)
         self.bok_combo.currentIndexChanged.connect(self.on_bok_select)
 
-        econ_layout.addWidget(lbl_bok_list, 1, 0)
-        econ_layout.addWidget(self.bok_combo, 1, 1, 1, 5)
-        # 세부 목록 콤보박스 (한국은행 서비스 통계 목록 선택 시 채워짐)
+        group_layout.addWidget(lbl_bok_list, 1, 0)
+        group_layout.addWidget(self.bok_combo, 1, 1, 1, 5)
+        # 세부 목록 콤보박스 (서비스 통계 목록 선택 시 채워짐)
         lbl_bok_detail = QLabel("세부 목록:")
         self.bok_detail_combo = QComboBox()
         self.bok_detail_combo.setEditable(False)
         self.bok_detail_combo.currentIndexChanged.connect(self.on_bok_detail_select)
-        econ_layout.addWidget(lbl_bok_detail, 2, 0)
-        econ_layout.addWidget(self.bok_detail_combo, 2, 1, 1, 5)
+        group_layout.addWidget(lbl_bok_detail, 2, 0)
+        group_layout.addWidget(self.bok_detail_combo, 2, 1, 1, 5)
 
         # 검색은 자동실행으로 처리하므로 버튼은 표시하지 않습니다.
 
         # mapping index -> STAT_CODE
         self.bok_index_to_code = {}
 
-        # 세부 선택시 상세값 표시용 (읽기전용)
-        lbl_cycle = QLabel("CYCLE:")
-        lbl_item_code = QLabel("ITEM_CODE:")
-        lbl_start_time = QLabel("START_TIME:")
-        lbl_end_time = QLabel("END_TIME:")
-
-        self.edit_bok_cycle = QLineEdit("")
-        self.edit_bok_item_code = QLineEdit("")
-        self.edit_bok_start_time = QLineEdit("")
-        self.edit_bok_end_time = QLineEdit("")
-        for w in (self.edit_bok_cycle, self.edit_bok_item_code, self.edit_bok_start_time, self.edit_bok_end_time):
-            try:
-                w.setReadOnly(True)
-            except Exception:
-                pass
-
-        econ_layout.addWidget(lbl_cycle, 3, 0)
-        econ_layout.addWidget(self.edit_bok_cycle, 3, 1)
-        econ_layout.addWidget(lbl_item_code, 3, 2)
-        econ_layout.addWidget(self.edit_bok_item_code, 3, 3)
-        econ_layout.addWidget(lbl_start_time, 4, 0)
-        econ_layout.addWidget(self.edit_bok_start_time, 4, 1)
-        econ_layout.addWidget(lbl_end_time, 4, 2)
-        econ_layout.addWidget(self.edit_bok_end_time, 4, 3)
         # 기간 선택 콤보박스 (시작/종료)
         lbl_period_start = QLabel("기간 시작:")
         lbl_period_end = QLabel("기간 종료:")
@@ -290,25 +270,65 @@ class VWorldAdmCodeGUI(QWidget):
         self.combo_period_end = QComboBox()
         self.combo_period_start.setEditable(False)
         self.combo_period_end.setEditable(False)
-        econ_layout.addWidget(lbl_period_start, 5, 0)
-        econ_layout.addWidget(self.combo_period_start, 5, 1)
-        econ_layout.addWidget(lbl_period_end, 5, 2)
-        econ_layout.addWidget(self.combo_period_end, 5, 3)
+        # make both period combos the same width for consistent layout
+        try:
+            fixed_w = 140
+            self.combo_period_start.setFixedWidth(fixed_w)
+            self.combo_period_end.setFixedWidth(fixed_w)
+        except Exception:
+            pass
+        group_layout.addWidget(lbl_period_start, 3, 0)
+        group_layout.addWidget(self.combo_period_start, 3, 1)
+        group_layout.addWidget(lbl_period_end, 3, 2)
+        group_layout.addWidget(self.combo_period_end, 3, 3)
         # 출력하기 버튼 및 결과 테이블
         self.btn_bok_print = QPushButton("출력하기")
         self.btn_bok_print.clicked.connect(self.on_bok_print)
-        econ_layout.addWidget(self.btn_bok_print, 6, 0)
+        # place group box into econ layout
+        group_data1.setLayout(group_layout)
+        econ_layout.addWidget(group_data1, 0, 0, 1, 7)
+
+        econ_layout.addWidget(self.btn_bok_print, 1, 0)
 
         self.bok_result_table = QTableWidget()
         self.bok_result_table.setColumnCount(0)
         self.bok_result_table.setRowCount(0)
         self.bok_result_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        econ_layout.addWidget(self.bok_result_table, 7, 0, 1, 7)
+        econ_layout.addWidget(self.bok_result_table, 2, 0, 1, 7)
 
         tab_econ.setLayout(econ_layout)
 
         self.tabs.addTab(tab_real, "부동산 거래")
         self.tabs.addTab(tab_econ, "경제지표")
+
+        # 출처 탭: 텍스트 박스 추가
+        tab_source = QWidget()
+        source_layout = QVBoxLayout()
+        lbl_source = QLabel("출처 노트:")
+        self.source_text = QTextEdit()
+        self.source_text.setPlaceholderText("출처나 메모를 입력하세요.")
+        # 초기 출처 내용 채우기
+        self.source_text.setPlainText(
+            "[부동산 거래]\n"
+            "1. 주소검색\n"
+            "  - 국토교통부 디지털트윈국토\n"
+            "  - https://www.vworld.kr/v4po_openapi_s001.do\n"
+            "  - https://www.vworld.kr/v4po_search.do?searchCaE=open&searchIdEW=%25EB%25B2%2595%25EC%25A0%2595%25EB%258F%2599%25EC%25A0%2595%25EB%25B3%25B4\n"
+            "  - 개발키 : 536CFED0-72BE-3E69-9C7F-1F44FED0E734\n\n"
+            "2. 매매내역\n"
+            " - 공공데이터포털\n"
+            " - 국토교통부_아파트 매매 실거래가 자료\n"
+            " - Service Key : Nv0jBnCHJXCT20iu910K%2FIGnF556Vt2w06icWR2uj66dF73AiTNBXaM7bIS9Nu9C0cmB7sGVgpnbCiK01Qkgeg%3D%3D\n\n"
+            "[경제지표]\n"
+            "1. 경제통계\n"
+            "  - 한국은행 경제통계시스템\n"
+            "  - https://ecos.bok.or.kr/#/\n"
+            "  - 한국은행 인증키 : TZ9P9GAR03LBXV2J3QGU"
+        )
+        source_layout.addWidget(lbl_source)
+        source_layout.addWidget(self.source_text)
+        tab_source.setLayout(source_layout)
+        self.tabs.addTab(tab_source, "출처")
 
         main_layout = QGridLayout()
         main_layout.addWidget(self.tabs, 0, 0)
@@ -810,6 +830,11 @@ class VWorldAdmCodeGUI(QWidget):
         self.bok_detail_combo.clear()
         self.bok_detail_index_to_pitem = {}
         self.bok_detail_index_to_info = {}
+        # 맨 위에 빈 항목 추가
+        try:
+            self.bok_detail_combo.addItem("")
+        except Exception:
+            pass
 
         for idx, node in enumerate(nodes):
             item_name = (node.findtext('ITEM_NAME') or '').strip()
@@ -826,15 +851,17 @@ class VWorldAdmCodeGUI(QWidget):
             if not display:
                 display = ''.join(node.itertext()).strip()[:100]
 
+            # add item after the initial empty item -> mapping index = idx + 1
+            add_index = idx + 1
             self.bok_detail_combo.addItem(display)
             if p_item_code:
                 try:
-                    self.bok_detail_combo.setItemData(idx, QBrush(QColor('red')), Qt.ForegroundRole)
+                    self.bok_detail_combo.setItemData(add_index, QBrush(QColor('red')), Qt.ForegroundRole)
                 except Exception:
                     pass
 
-            self.bok_detail_index_to_pitem[idx] = p_item_code
-            self.bok_detail_index_to_info[idx] = {
+            self.bok_detail_index_to_pitem[add_index] = p_item_code
+            self.bok_detail_index_to_info[add_index] = {
                 'CYCLE': cycle,
                 'ITEM_CODE': item_code,
                 'START_TIME': start_time,
@@ -847,28 +874,19 @@ class VWorldAdmCodeGUI(QWidget):
                 self.status_label.setText("세부항목 없음")
             except Exception:
                 pass
-        else:
-            # clear detail display fields
-            try:
-                self.edit_bok_cycle.setText("")
-                self.edit_bok_item_code.setText("")
-                self.edit_bok_start_time.setText("")
-                self.edit_bok_end_time.setText("")
-            except Exception:
-                pass
 
     def on_bok_detail_select(self):
         sel = self.bok_detail_combo.currentIndex()
-        if sel < 0:
+        # index 0 is the intentionally empty top item
+        if sel <= 0:
+            # clear period combos when empty/top selected
+            try:
+                self.combo_period_start.clear()
+                self.combo_period_end.clear()
+            except Exception:
+                pass
             return
         info = self.bok_detail_index_to_info.get(sel, {})
-        try:
-            self.edit_bok_cycle.setText(info.get('CYCLE', ''))
-            self.edit_bok_item_code.setText(info.get('ITEM_CODE', ''))
-            self.edit_bok_start_time.setText(info.get('START_TIME', ''))
-            self.edit_bok_end_time.setText(info.get('END_TIME', ''))
-        except Exception:
-            pass
         # 기간 콤보 채우기: CYCLE이 'A'이면 연 단위(START_TIME~END_TIME)
         try:
             cycle = (info.get('CYCLE') or '').upper()
@@ -1009,7 +1027,7 @@ class VWorldAdmCodeGUI(QWidget):
 
         stat_idx = self.bok_combo.currentIndex()
         if stat_idx < 0:
-            QMessageBox.warning(self, "입력 오류", "한국은행 서비스 통계 목록을 선택하세요.")
+            QMessageBox.warning(self, "입력 오류", "서비스 통계 목록을 선택하세요.")
             return
         stat_code = self.bok_index_to_code.get(stat_idx, '').strip()
         if not stat_code:
@@ -1087,8 +1105,27 @@ class VWorldAdmCodeGUI(QWidget):
                 children = {c.tag: (c.text or '') for c in list(node)}
                 for cidx, col in enumerate(cols):
                     val = children.get(col, '')
-                    item = QTableWidgetItem(val)
-                    # numeric detection
+                    # If this is the DATA_VALUE column, format with thousand separators
+                    display_val = val
+                    try:
+                        if col == 'DATA_VALUE' and val is not None and val != '':
+                            s = str(val).replace(',', '').strip()
+                            sign = ''
+                            if s.startswith(('+', '-')):
+                                if s[0] == '-':
+                                    sign = '-'
+                                s = s[1:]
+                            if '.' in s:
+                                left, right = s.split('.', 1)
+                                left_fmt = format(int(left), ',') if left.isdigit() else left
+                                display_val = sign + left_fmt + '.' + right
+                            else:
+                                display_val = sign + format(int(s), ',') if s.isdigit() else val
+                    except Exception:
+                        display_val = val
+
+                    item = QTableWidgetItem(display_val)
+                    # numeric detection (store raw numeric value in UserRole)
                     try:
                         num = float(val.replace(',', ''))
                         item.setData(Qt.UserRole, num)
