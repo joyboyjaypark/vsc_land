@@ -283,6 +283,27 @@ class VWorldAdmCodeGUI(QWidget):
         econ_layout.addWidget(self.edit_bok_start_time, 4, 1)
         econ_layout.addWidget(lbl_end_time, 4, 2)
         econ_layout.addWidget(self.edit_bok_end_time, 4, 3)
+        # 기간 선택 콤보박스 (시작/종료)
+        lbl_period_start = QLabel("기간 시작:")
+        lbl_period_end = QLabel("기간 종료:")
+        self.combo_period_start = QComboBox()
+        self.combo_period_end = QComboBox()
+        self.combo_period_start.setEditable(False)
+        self.combo_period_end.setEditable(False)
+        econ_layout.addWidget(lbl_period_start, 5, 0)
+        econ_layout.addWidget(self.combo_period_start, 5, 1)
+        econ_layout.addWidget(lbl_period_end, 5, 2)
+        econ_layout.addWidget(self.combo_period_end, 5, 3)
+        # 출력하기 버튼 및 결과 테이블
+        self.btn_bok_print = QPushButton("출력하기")
+        self.btn_bok_print.clicked.connect(self.on_bok_print)
+        econ_layout.addWidget(self.btn_bok_print, 6, 0)
+
+        self.bok_result_table = QTableWidget()
+        self.bok_result_table.setColumnCount(0)
+        self.bok_result_table.setRowCount(0)
+        self.bok_result_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        econ_layout.addWidget(self.bok_result_table, 7, 0, 1, 7)
 
         tab_econ.setLayout(econ_layout)
 
@@ -848,6 +869,236 @@ class VWorldAdmCodeGUI(QWidget):
             self.edit_bok_end_time.setText(info.get('END_TIME', ''))
         except Exception:
             pass
+        # 기간 콤보 채우기: CYCLE이 'A'이면 연 단위(START_TIME~END_TIME)
+        try:
+            cycle = (info.get('CYCLE') or '').upper()
+            start_t = (info.get('START_TIME') or '').strip()
+            end_t = (info.get('END_TIME') or '').strip()
+            self.combo_period_start.clear()
+            self.combo_period_end.clear()
+
+            if cycle == 'A' and start_t and end_t:
+                try:
+                    sy = int(start_t[:4])
+                    ey = int(end_t[:4])
+                except Exception:
+                    sy = None; ey = None
+
+                if sy is not None and ey is not None and sy <= ey:
+                    years = [str(y) for y in range(sy, ey + 1)]
+                    self.combo_period_start.addItems(years)
+                    self.combo_period_end.addItems(years)
+                    try:
+                        self.combo_period_start.setCurrentIndex(0)
+                        self.combo_period_end.setCurrentIndex(len(years) - 1)
+                    except Exception:
+                        pass
+
+            elif cycle == 'Q' and start_t and end_t:
+                # parse quarters from START_TIME/END_TIME
+                def parse_quarter(t):
+                    # accept formats: YYYYMM, YYYYQn, YYYY-Qn, YYYY.n (fallback)
+                    if not t:
+                        return None
+                    t = t.strip()
+                    # YYYYMM
+                    if len(t) >= 6 and t[:6].isdigit():
+                        y = int(t[:4])
+                        m = int(t[4:6])
+                        q = (m - 1) // 3 + 1
+                        return (y, q)
+                    # YYYYQn or YYYY-Qn
+                    import re
+                    m = re.match(r"^(\d{4})\D*Q?(\d)$", t, re.IGNORECASE)
+                    if m:
+                        y = int(m.group(1))
+                        q = int(m.group(2))
+                        return (y, q)
+                    # try to parse leading year
+                    try:
+                        y = int(t[:4])
+                        # default to Q1 if month not present
+                        return (y, 1)
+                    except Exception:
+                        return None
+
+                start_q = parse_quarter(start_t)
+                end_q = parse_quarter(end_t)
+                if start_q and end_q:
+                    sy, sq = start_q
+                    ey, eq = end_q
+                    # convert to linear quarter index
+                    start_idx = sy * 4 + (sq - 1)
+                    end_idx = ey * 4 + (eq - 1)
+                    if start_idx <= end_idx:
+                        quarters = []
+                        for idx in range(start_idx, end_idx + 1):
+                            y = idx // 4
+                            q = (idx % 4) + 1
+                            quarters.append(f"{y}Q{q}")
+                        self.combo_period_start.addItems(quarters)
+                        self.combo_period_end.addItems(quarters)
+                        try:
+                            self.combo_period_start.setCurrentIndex(0)
+                            self.combo_period_end.setCurrentIndex(len(quarters) - 1)
+                        except Exception:
+                            pass
+            elif cycle == 'M' and start_t and end_t:
+                # parse months from START_TIME/END_TIME; accept YYYYMM or YYYY-MM or YYYY.MM
+                def parse_ym(t):
+                    if not t:
+                        return None
+                    t = t.strip()
+                    # raw digits YYYYMM
+                    if len(t) >= 6 and t[:6].isdigit():
+                        try:
+                            y = int(t[:4]); m = int(t[4:6]);
+                            return (y, m)
+                        except Exception:
+                            return None
+                    import re
+                    m = re.match(r"^(\d{4})\D?(\d{1,2})", t)
+                    if m:
+                        try:
+                            return (int(m.group(1)), int(m.group(2)))
+                        except Exception:
+                            return None
+                    try:
+                        # fallback: year only
+                        y = int(t[:4])
+                        return (y, 1)
+                    except Exception:
+                        return None
+
+                s = parse_ym(start_t)
+                e = parse_ym(end_t)
+                if s and e:
+                    sy, sm = s
+                    ey, em = e
+                    # convert to month index
+                    start_idx = sy * 12 + (sm - 1)
+                    end_idx = ey * 12 + (em - 1)
+                    if start_idx <= end_idx:
+                        months = []
+                        for idx in range(start_idx, end_idx + 1):
+                            y = idx // 12
+                            mth = (idx % 12) + 1
+                            months.append(f"{y:04d}{mth:02d}")
+                        self.combo_period_start.addItems(months)
+                        self.combo_period_end.addItems(months)
+                        try:
+                            self.combo_period_start.setCurrentIndex(0)
+                            self.combo_period_end.setCurrentIndex(len(months) - 1)
+                        except Exception:
+                            pass
+            else:
+                # 기타 사이클: 기본적으로 START_TIME/END_TIME을 단일 항목으로 넣음
+                if start_t:
+                    self.combo_period_start.addItem(start_t)
+                if end_t:
+                    self.combo_period_end.addItem(end_t)
+        except Exception:
+            pass
+
+    def on_bok_print(self):
+        # Build StatisticSearch URL and display results in table
+        key = self.edit_bok_key.text().strip()
+        if not key:
+            QMessageBox.warning(self, "입력 오류", "한국은행 인증키를 입력하세요.")
+            return
+
+        stat_idx = self.bok_combo.currentIndex()
+        if stat_idx < 0:
+            QMessageBox.warning(self, "입력 오류", "한국은행 서비스 통계 목록을 선택하세요.")
+            return
+        stat_code = self.bok_index_to_code.get(stat_idx, '').strip()
+        if not stat_code:
+            QMessageBox.warning(self, "입력 오류", "선택된 통계표의 STAT_CODE가 없습니다.")
+            return
+
+        detail_idx = self.bok_detail_combo.currentIndex()
+        if detail_idx < 0:
+            QMessageBox.warning(self, "입력 오류", "세부 목록을 선택하세요.")
+            return
+        detail_info = self.bok_detail_index_to_info.get(detail_idx, {})
+        item_code1 = detail_info.get('ITEM_CODE', '')
+        cycle = detail_info.get('CYCLE', '')
+
+        # period values
+        start_val = self.combo_period_start.currentText().strip() or ''
+        end_val = self.combo_period_end.currentText().strip() or ''
+
+        # API params
+        service = 'StatisticSearch'
+        req_type = 'xml'
+        lang = 'kr'
+        start_idx = '1'
+        end_cnt = '5000'  # per user request
+
+        # Build path: base/service/key/type/lang/start/end/stat_code/주기/검색시작일자/검색종료일자/통계항목코드1/통계항목코드2/통계항목코드3/통계항목코드4
+        base = 'https://ecos.bok.or.kr/api'
+        parts = [base, service, key, req_type, lang, start_idx, end_cnt, stat_code, cycle, start_val, end_val]
+        # 통계항목코드1..4: put item_code1 then placeholders
+        parts.append(item_code1 or '?')
+        parts.extend(['?', '?'])
+        url = '/'.join(parts)
+
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.content
+        except Exception as e:
+            QMessageBox.critical(self, "요청 실패", f"StatisticSearch 요청 실패:\n{e}")
+            return
+
+        try:
+            root = ET.fromstring(data)
+        except Exception as e:
+            QMessageBox.critical(self, "파싱 실패", f"응답 XML 파싱 실패:\n{e}")
+            return
+
+        nodes = root.findall('.//list') or root.findall('.//row') or root.findall('.//item')
+        if not nodes:
+            QMessageBox.information(self, "결과 없음", "조회된 데이터가 없습니다.")
+            # clear table
+            try:
+                self.bok_result_table.setRowCount(0)
+                self.bok_result_table.setColumnCount(0)
+            except Exception:
+                pass
+            return
+
+        # Determine column headers from first node children
+        first = nodes[0]
+        headers = [child.tag for child in list(first)]
+        # unify headers order across nodes
+        cols = headers[:]
+        for n in nodes[1:]:
+            for child in list(n):
+                if child.tag not in cols:
+                    cols.append(child.tag)
+
+        # Populate table
+        try:
+            self.bok_result_table.setColumnCount(len(cols))
+            self.bok_result_table.setHorizontalHeaderLabels(cols)
+            self.bok_result_table.setRowCount(len(nodes))
+            for r, node in enumerate(nodes):
+                children = {c.tag: (c.text or '') for c in list(node)}
+                for cidx, col in enumerate(cols):
+                    val = children.get(col, '')
+                    item = QTableWidgetItem(val)
+                    # numeric detection
+                    try:
+                        num = float(val.replace(',', ''))
+                        item.setData(Qt.UserRole, num)
+                    except Exception:
+                        pass
+                    self.bok_result_table.setItem(r, cidx, item)
+            self.bok_result_table.resizeColumnsToContents()
+        except Exception as e:
+            QMessageBox.warning(self, "표시 실패", f"결과 표에 표시 중 오류:\n{e}")
+            return
 
     def on_bok_select(self):
         sel = self.bok_combo.currentIndex()
