@@ -246,11 +246,43 @@ class VWorldAdmCodeGUI(QWidget):
 
         econ_layout.addWidget(lbl_bok_list, 1, 0)
         econ_layout.addWidget(self.bok_combo, 1, 1, 1, 5)
+        # 세부 목록 콤보박스 (한국은행 서비스 통계 목록 선택 시 채워짐)
+        lbl_bok_detail = QLabel("세부 목록:")
+        self.bok_detail_combo = QComboBox()
+        self.bok_detail_combo.setEditable(False)
+        self.bok_detail_combo.currentIndexChanged.connect(self.on_bok_detail_select)
+        econ_layout.addWidget(lbl_bok_detail, 2, 0)
+        econ_layout.addWidget(self.bok_detail_combo, 2, 1, 1, 5)
 
         # 검색은 자동실행으로 처리하므로 버튼은 표시하지 않습니다.
 
         # mapping index -> STAT_CODE
         self.bok_index_to_code = {}
+
+        # 세부 선택시 상세값 표시용 (읽기전용)
+        lbl_cycle = QLabel("CYCLE:")
+        lbl_item_code = QLabel("ITEM_CODE:")
+        lbl_start_time = QLabel("START_TIME:")
+        lbl_end_time = QLabel("END_TIME:")
+
+        self.edit_bok_cycle = QLineEdit("")
+        self.edit_bok_item_code = QLineEdit("")
+        self.edit_bok_start_time = QLineEdit("")
+        self.edit_bok_end_time = QLineEdit("")
+        for w in (self.edit_bok_cycle, self.edit_bok_item_code, self.edit_bok_start_time, self.edit_bok_end_time):
+            try:
+                w.setReadOnly(True)
+            except Exception:
+                pass
+
+        econ_layout.addWidget(lbl_cycle, 3, 0)
+        econ_layout.addWidget(self.edit_bok_cycle, 3, 1)
+        econ_layout.addWidget(lbl_item_code, 3, 2)
+        econ_layout.addWidget(self.edit_bok_item_code, 3, 3)
+        econ_layout.addWidget(lbl_start_time, 4, 0)
+        econ_layout.addWidget(self.edit_bok_start_time, 4, 1)
+        econ_layout.addWidget(lbl_end_time, 4, 2)
+        econ_layout.addWidget(self.edit_bok_end_time, 4, 3)
 
         tab_econ.setLayout(econ_layout)
 
@@ -701,6 +733,122 @@ class VWorldAdmCodeGUI(QWidget):
         if not nodes:
             QMessageBox.information(self, "결과 없음", "조회된 결과가 없습니다.")
 
+        # 자동으로 첫 항목의 세부목록도 불러오도록 (있다면)
+        try:
+            if self.bok_combo.count() > 0:
+                QTimer.singleShot(200, lambda: self.on_bok_select())
+        except Exception:
+            pass
+
+    def _load_stat_item_list(self, stat_code):
+        if not stat_code:
+            # clear detail
+            try:
+                self.bok_detail_combo.clear()
+            except Exception:
+                pass
+            return
+
+        key = self.edit_bok_key.text().strip()
+        if not key:
+            return
+
+        service = "StatisticItemList"
+        req_type = "xml"
+        lang = "kr"
+        start = "1"
+        end = "100"  # per request
+
+        base = "https://ecos.bok.or.kr/api"
+        parts = [base, service, key, req_type, lang, start, end, stat_code]
+        url = "/".join(parts)
+
+        try:
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            data = resp.content
+        except Exception as e:
+            # show but don't block
+            try:
+                self.status_label.setText(f"세부목록 조회 실패: {e}")
+            except Exception:
+                pass
+            return
+
+        try:
+            root = ET.fromstring(data)
+        except Exception as e:
+            try:
+                self.status_label.setText(f"세부목목 파싱 실패: {e}")
+            except Exception:
+                pass
+            return
+
+        nodes = root.findall('.//list') or root.findall('.//row') or root.findall('.//item')
+
+        self.bok_detail_combo.clear()
+        self.bok_detail_index_to_pitem = {}
+        self.bok_detail_index_to_info = {}
+
+        for idx, node in enumerate(nodes):
+            item_name = (node.findtext('ITEM_NAME') or '').strip()
+            cycle = (node.findtext('CYCLE') or '').strip()
+            p_item_code = (node.findtext('P_ITEM_CODE') or '').strip()
+            item_code = (node.findtext('ITEM_CODE') or '').strip()
+            start_time = (node.findtext('START_TIME') or '').strip()
+            end_time = (node.findtext('END_TIME') or '').strip()
+
+            # display as ITEM_NAME_CYCLE_START_TIME_END_TIME (underscore-separated)
+            parts = [item_name, cycle, start_time, end_time]
+            # include only non-empty parts to avoid trailing underscores
+            display = "_".join([p for p in parts if p])
+            if not display:
+                display = ''.join(node.itertext()).strip()[:100]
+
+            self.bok_detail_combo.addItem(display)
+            if p_item_code:
+                try:
+                    self.bok_detail_combo.setItemData(idx, QBrush(QColor('red')), Qt.ForegroundRole)
+                except Exception:
+                    pass
+
+            self.bok_detail_index_to_pitem[idx] = p_item_code
+            self.bok_detail_index_to_info[idx] = {
+                'CYCLE': cycle,
+                'ITEM_CODE': item_code,
+                'START_TIME': start_time,
+                'END_TIME': end_time,
+                'P_ITEM_CODE': p_item_code,
+            }
+
+        if not nodes:
+            try:
+                self.status_label.setText("세부항목 없음")
+            except Exception:
+                pass
+        else:
+            # clear detail display fields
+            try:
+                self.edit_bok_cycle.setText("")
+                self.edit_bok_item_code.setText("")
+                self.edit_bok_start_time.setText("")
+                self.edit_bok_end_time.setText("")
+            except Exception:
+                pass
+
+    def on_bok_detail_select(self):
+        sel = self.bok_detail_combo.currentIndex()
+        if sel < 0:
+            return
+        info = self.bok_detail_index_to_info.get(sel, {})
+        try:
+            self.edit_bok_cycle.setText(info.get('CYCLE', ''))
+            self.edit_bok_item_code.setText(info.get('ITEM_CODE', ''))
+            self.edit_bok_start_time.setText(info.get('START_TIME', ''))
+            self.edit_bok_end_time.setText(info.get('END_TIME', ''))
+        except Exception:
+            pass
+
     def on_bok_select(self):
         sel = self.bok_combo.currentIndex()
         if sel < 0:
@@ -710,6 +858,12 @@ class VWorldAdmCodeGUI(QWidget):
             # show selected code in status label and copy to clipboard
             self.status_label.setText(f"선택 통계표코드: {code}")
             QApplication.clipboard().setText(code or "")
+        except Exception:
+            pass
+
+        # 세부 목록 조회: 서비스는 StatisticItemList, 요청종료건수는 100
+        try:
+            self._load_stat_item_list(code)
         except Exception:
             pass
 
