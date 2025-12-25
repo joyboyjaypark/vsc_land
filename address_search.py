@@ -3,8 +3,9 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit,
     QComboBox, QPushButton, QGridLayout, QMessageBox,
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
-    QSizePolicy, QProgressBar, QInputDialog, QTabWidget
+    QSizePolicy, QProgressBar, QInputDialog, QTabWidget,
 )
+from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 import os
 
@@ -229,12 +230,28 @@ class VWorldAdmCodeGUI(QWidget):
 
         tab_econ = QWidget()
         econ_layout = QGridLayout()
-        # 경제지표 탭: 한국은행 API Key 입력창 추가 (기본값 설정)
-        econ_label = QLabel("한국은행 인증키:")
+        # 경제지표 탭: 간소화된 UI — 인증키 입력 + 결과 콤보
+        lbl_bok_key = QLabel("한국은행 인증키:")
         self.edit_bok_key = QLineEdit("TZ9P9GAR03LBXV2J3QGU")
         self.edit_bok_key.setPlaceholderText("한국은행 Open API 인증키")
-        econ_layout.addWidget(econ_label, 0, 0)
+
+        econ_layout.addWidget(lbl_bok_key, 0, 0)
         econ_layout.addWidget(self.edit_bok_key, 0, 1)
+
+        # 콤보 제목
+        lbl_bok_list = QLabel("한국은행 서비스 통계 목록:")
+        self.bok_combo = QComboBox()
+        self.bok_combo.setEditable(False)
+        self.bok_combo.currentIndexChanged.connect(self.on_bok_select)
+
+        econ_layout.addWidget(lbl_bok_list, 1, 0)
+        econ_layout.addWidget(self.bok_combo, 1, 1, 1, 5)
+
+        # 검색은 자동실행으로 처리하므로 버튼은 표시하지 않습니다.
+
+        # mapping index -> STAT_CODE
+        self.bok_index_to_code = {}
+
         tab_econ.setLayout(econ_layout)
 
         self.tabs.addTab(tab_real, "부동산 거래")
@@ -261,6 +278,7 @@ class VWorldAdmCodeGUI(QWidget):
 
         # 자동으로 요청 실행 (이벤트 루프가 시작된 직후 호출)
         QTimer.singleShot(0, self.send_request)
+        QTimer.singleShot(0, self.on_bok_search)
 
         # worker handle
         self._apt_worker = None
@@ -624,6 +642,76 @@ class VWorldAdmCodeGUI(QWidget):
         pass
         if not filtered:
             QMessageBox.information(self, "결과 없음", "선택한 읍면동에 대한 결과가 없습니다.")
+
+    # =========== 한국은행(ECOS) 통계표 목록 조회 ===========
+    def on_bok_search(self):
+        # Use fixed parameters per requirements
+        service = "StatisticTableList"
+        key = self.edit_bok_key.text().strip()
+        req_type = "xml"
+        lang = "kr"
+        start = "1"
+        end = "1000"
+        stat_code = ""
+
+        if not key:
+            QMessageBox.warning(self, "입력 오류", "한국은행 인증키를 입력하세요.")
+            return
+
+        base = "https://ecos.bok.or.kr/api"
+        parts = [base, service, key, req_type, lang, start, end]
+        if stat_code:
+            parts.append(stat_code)
+        url = "/".join(parts)
+
+        try:
+            resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
+            data = resp.content
+        except Exception as e:
+            QMessageBox.critical(self, "요청 실패", f"API 요청 중 오류가 발생했습니다:\n{e}")
+            return
+
+        try:
+            root = ET.fromstring(data)
+        except Exception as e:
+            QMessageBox.critical(self, "파싱 오류", f"응답 XML 파싱 실패:\n{e}")
+            return
+
+        nodes = root.findall('.//list') or root.findall('.//row') or root.findall('.//item')
+
+        self.bok_combo.clear()
+        self.bok_index_to_code.clear()
+
+        for idx, node in enumerate(nodes):
+            name = node.findtext('STAT_NAME') or node.findtext('STAT_NM') or ''
+            srch = (node.findtext('SRCH_YN') or '').strip()
+            code = node.findtext('STAT_CODE') or node.findtext('STAT_ID') or ''
+
+            self.bok_combo.addItem(name)
+            # 색상 처리: SRCH_YN == 'Y'이면 항목 글씨를 빨갛게 설정
+            if srch.upper() == 'Y':
+                try:
+                    self.bok_combo.setItemData(idx, QBrush(QColor('red')), Qt.ForegroundRole)
+                except Exception:
+                    pass
+
+            self.bok_index_to_code[idx] = code
+
+        if not nodes:
+            QMessageBox.information(self, "결과 없음", "조회된 결과가 없습니다.")
+
+    def on_bok_select(self):
+        sel = self.bok_combo.currentIndex()
+        if sel < 0:
+            return
+        code = self.bok_index_to_code.get(sel, '')
+        try:
+            # show selected code in status label and copy to clipboard
+            self.status_label.setText(f"선택 통계표코드: {code}")
+            QApplication.clipboard().setText(code or "")
+        except Exception:
+            pass
 
     def on_apt_cancel(self):
         if getattr(self, '_apt_worker', None) is None:
