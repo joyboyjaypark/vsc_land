@@ -373,12 +373,13 @@ class VWorldAdmCodeGUI(QWidget):
             "[부동산 거래]\n"
             "1. 주소검색\n"
             "  - 국토교통부 디지털트윈국토\n"
-            "  - https://www.vworld.kr/v4po_openapi_s001.do\n"
+            "  - 주소검색 (유효기간 : 26.06.21)\n"
+            "  - https://www.vworld.kr/v4po_openapi_s001.do\n\n"
             "  - https://www.vworld.kr/v4po_search.do?searchCaE=open&searchIdEW=%25EB%25B2%2595%25EC%25A0%2595%25EB%258F%2599%25EC%25A0%2595%25EB%25B3%25B4\n"
             "  - 개발키 : 536CFED0-72BE-3E69-9C7F-1F44FED0E734\n\n"
             "2. 매매내역\n"
             " - 공공데이터포털\n"
-            " - 국토교통부_아파트 매매 실거래가 자료\n"
+            " - 국토교통부_아파트 매매 실거래가 자료(유효기간 : 27.12.21)\n"
             " - Service Key : Nv0jBnCHJXCT20iu910K%2FIGnF556Vt2w06icWR2uj66dF73AiTNBXaM7bIS9Nu9C0cmB7sGVgpnbCiK01Qkgeg%3D%3D\n\n"
             "[경제지표]\n"
             "1. 경제통계\n"
@@ -388,7 +389,8 @@ class VWorldAdmCodeGUI(QWidget):
             "[지표누리]\n"
             " - 지표누리공유서비스\n"
             " - https://www.index.go.kr/unity/openApi/openApiIntro.do\n"
-            " - 인증키 : \tH4T022E22214155B"
+            " - 인증키 : \tH4T022E22214155B\n"
+            " - 유효기간(가입후 1년간) : 26.12.25(가입일 : 25.12.25)"
         )
         source_layout.addWidget(lbl_source)
         source_layout.addWidget(self.source_text)
