@@ -5,7 +5,9 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
     QSizePolicy, QProgressBar, QInputDialog, QTabWidget,
     QVBoxLayout, QTextEdit,
+    QListWidget, QListWidgetItem,
 )
+from PyQt5.QtWidgets import QHBoxLayout, QCheckBox
 from PyQt5.QtGui import QColor, QBrush
 from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
 import os
@@ -18,6 +20,8 @@ import time
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.ticker import FuncFormatter
+import functools
+import traceback
 
 
 
@@ -289,6 +293,17 @@ class VWorldAdmCodeGUI(QWidget):
         group_layout.addWidget(self.combo_period_start, 3, 1)
         group_layout.addWidget(lbl_period_end, 3, 2)
         group_layout.addWidget(self.combo_period_end, 3, 3)
+        # saved list box under Data 1: shows appended selections
+        lbl_saved_list = QLabel("저장된 목록:")
+        self.bok_listbox = QListWidget()
+        # storage for mapping listbox entries -> table row ranges
+        self.bok_saved_ranges = []
+        try:
+            self.bok_listbox.setFixedHeight(100)
+        except Exception:
+            pass
+        group_layout.addWidget(lbl_saved_list, 4, 0)
+        group_layout.addWidget(self.bok_listbox, 4, 1, 1, 5)
         # 출력하기 버튼 및 결과 테이블
         self.btn_bok_print = QPushButton("출력하기")
         self.btn_bok_print.clicked.connect(self.on_bok_print)
@@ -1058,6 +1073,14 @@ class VWorldAdmCodeGUI(QWidget):
         start_val = self.combo_period_start.currentText().strip() or ''
         end_val = self.combo_period_end.currentText().strip() or ''
 
+        # prepare entry text for saved list (do not add until data fetched successfully)
+        try:
+            stat_name_text = self.bok_combo.currentText() or ''
+            detail_text = self.bok_detail_combo.currentText() or ''
+            entry = stat_name_text + (" :: " + detail_text if detail_text else "")
+        except Exception:
+            entry = ''
+
         # API params
         service = 'StatisticSearch'
         req_type = 'xml'
@@ -1090,12 +1113,7 @@ class VWorldAdmCodeGUI(QWidget):
         nodes = root.findall('.//list') or root.findall('.//row') or root.findall('.//item')
         if not nodes:
             QMessageBox.information(self, "결과 없음", "조회된 데이터가 없습니다.")
-            # clear table
-            try:
-                self.bok_result_table.setRowCount(0)
-                self.bok_result_table.setColumnCount(0)
-            except Exception:
-                pass
+            # do not clear existing table; simply return
             return
 
         # Determine column headers from first node children
@@ -1108,15 +1126,27 @@ class VWorldAdmCodeGUI(QWidget):
                 if child.tag not in cols:
                     cols.append(child.tag)
 
-        # Populate table
+        # Populate table: append rows to existing table without deleting previous data
         try:
-            self.bok_result_table.setColumnCount(len(cols))
-            self.bok_result_table.setHorizontalHeaderLabels(cols)
-            self.bok_result_table.setRowCount(len(nodes))
+            # existing headers (if any)
+            exist_col_count = self.bok_result_table.columnCount()
+            existing_headers = [self.bok_result_table.horizontalHeaderItem(i).text() for i in range(exist_col_count)] if exist_col_count > 0 else []
+            # union columns: preserve existing order then append new columns
+            union_cols = existing_headers[:]
+            for c in cols:
+                if c not in union_cols:
+                    union_cols.append(c)
+
+            self.bok_result_table.setColumnCount(len(union_cols))
+            self.bok_result_table.setHorizontalHeaderLabels(union_cols)
+
+            existing_rows = self.bok_result_table.rowCount()
+            self.bok_result_table.setRowCount(existing_rows + len(nodes))
             for r, node in enumerate(nodes):
                 children = {c.tag: (c.text or '') for c in list(node)}
-                for cidx, col in enumerate(cols):
+                for col in cols:
                     val = children.get(col, '')
+                    cidx = union_cols.index(col)
                     # If this is the DATA_VALUE column, format with thousand separators
                     display_val = val
                     try:
@@ -1143,11 +1173,94 @@ class VWorldAdmCodeGUI(QWidget):
                         item.setData(Qt.UserRole, num)
                     except Exception:
                         pass
-                    self.bok_result_table.setItem(r, cidx, item)
+                    self.bok_result_table.setItem(existing_rows + r, cidx, item)
+            # after successfully appending rows, add the saved-list entry with a checked checkbox
+            try:
+                if entry:
+                    item = QListWidgetItem()
+                    widget = QWidget()
+                    hl = QHBoxLayout()
+                    chk = QCheckBox(entry)
+                    chk.setChecked(True)
+                    btn = QPushButton("삭제")
+                    try:
+                        btn.setFixedWidth(50)
+                    except Exception:
+                        pass
+                    # connect delete with captured item
+                    from functools import partial
+                    btn.clicked.connect(partial(self._remove_saved_item, item))
+                    hl.addWidget(chk)
+                    hl.addWidget(btn)
+                    hl.setContentsMargins(2, 2, 2, 2)
+                    widget.setLayout(hl)
+                    self.bok_listbox.addItem(item)
+                    self.bok_listbox.setItemWidget(item, widget)
+                    try:
+                        item.setSizeHint(widget.sizeHint())
+                    except Exception:
+                        pass
+                    if not hasattr(self, 'bok_saved_ranges'):
+                        self.bok_saved_ranges = []
+                    self.bok_saved_ranges.append({'label': entry, 'start': existing_rows, 'count': len(nodes)})
+            except Exception:
+                pass
             self.bok_result_table.resizeColumnsToContents()
         except Exception as e:
             QMessageBox.warning(self, "표시 실패", f"결과 표에 표시 중 오류:\n{e}")
             return
+
+    def _remove_saved_item(self, item):
+        try:
+            idx = self.bok_listbox.row(item)
+            if idx < 0:
+                return
+            # remove mapping
+            mp = None
+            try:
+                mp = self.bok_saved_ranges.pop(idx)
+            except Exception:
+                mp = None
+            # remove table rows corresponding to this saved range
+            if mp:
+                start = int(mp.get('start', 0))
+                cnt = int(mp.get('count', 0))
+                # clamp
+                if cnt > 0:
+                    for _ in range(cnt):
+                        try:
+                            self.bok_result_table.removeRow(start)
+                        except Exception:
+                            pass
+                    # adjust subsequent saved_ranges' start indices
+                    for r in self.bok_saved_ranges:
+                        try:
+                            if r.get('start', 0) > start:
+                                r['start'] = max(0, int(r.get('start', 0)) - cnt)
+                        except Exception:
+                            pass
+            # remove listbox item
+            try:
+                self.bok_listbox.takeItem(idx)
+            except Exception:
+                pass
+        except Exception as e:
+            # log traceback to debug_logs and show messagebox for easier debugging
+            try:
+                logs_dir = os.path.join(os.getcwd(), "debug_logs")
+                os.makedirs(logs_dir, exist_ok=True)
+                ts = int(time.time())
+                fname = os.path.join(logs_dir, f"remove_saved_item_error_{ts}.log")
+                with open(fname, 'w', encoding='utf-8') as fw:
+                    fw.write("Error removing saved item:\n")
+                    fw.write(str(e) + "\n\n")
+                    traceback.print_exc(file=fw)
+            except Exception:
+                pass
+            try:
+                QMessageBox.critical(self, "삭제 오류", f"삭제 중 오류가 발생했습니다. 로그 파일을 확인하세요.\n{e}")
+            except Exception:
+                pass
 
     def on_bok_plot(self):
         try:
@@ -1182,43 +1295,182 @@ class VWorldAdmCodeGUI(QWidget):
                 QMessageBox.warning(self, "차트 생성 실패", "TIME 또는 DATA_VALUE 열을 찾을 수 없습니다.")
                 return
 
-            times = []
-            values = []
+            # Build per-saved-entry series (label, times[], values[]) so we can plot multiple series
+            series_list = []
             unit = ''
             stat_name = ''
             item1 = ''
             rows = self.bok_result_table.rowCount()
-            for r in range(rows):
-                t_item = self.bok_result_table.item(r, idx_time)
-                v_item = self.bok_result_table.item(r, idx_val)
-                t = t_item.text() if t_item else ''
-                v = v_item.text() if v_item else ''
-                # parse numeric
-                try:
-                    num = float(str(v).replace(',', ''))
-                except Exception:
-                    num = None
-                times.append(t)
-                values.append(num)
-                if idx_unit is not None and not unit:
-                    u_item = self.bok_result_table.item(r, idx_unit)
-                    unit = u_item.text() if u_item else ''
-                if idx_stat is not None and not stat_name:
-                    s_item = self.bok_result_table.item(r, idx_stat)
-                    stat_name = s_item.text() if s_item else ''
-                if idx_item1 is not None and not item1:
-                    it_item = self.bok_result_table.item(r, idx_item1)
-                    item1 = it_item.text() if it_item else ''
-
-            # filter out rows without numeric values
-            filtered = [(t, v) for t, v in zip(times, values) if v is not None]
-            if not filtered:
+            try:
+                # If saved ranges exist and some are checked, build series from each checked saved range
+                if getattr(self, 'bok_saved_ranges', None) and self.bok_listbox.count() > 0:
+                    for i in range(self.bok_listbox.count()):
+                        it = self.bok_listbox.item(i)
+                        if it is None:
+                            continue
+                        w = self.bok_listbox.itemWidget(it)
+                        if w is None:
+                            continue
+                        chk = w.findChild(QCheckBox)
+                        if chk is None or not chk.isChecked():
+                            continue
+                        if i < len(self.bok_saved_ranges):
+                            mp = self.bok_saved_ranges[i]
+                            start = int(mp.get('start', 0))
+                            cnt = int(mp.get('count', 0))
+                            times_s = []
+                            vals_s = []
+                            for r in range(start, start + cnt):
+                                t_item = self.bok_result_table.item(r, idx_time)
+                                v_item = self.bok_result_table.item(r, idx_val)
+                                t = t_item.text() if t_item else ''
+                                v = v_item.text() if v_item else ''
+                                try:
+                                    num = float(str(v).replace(',', ''))
+                                except Exception:
+                                    num = None
+                                # collect per-series
+                                times_s.append(t)
+                                vals_s.append(num)
+                                if idx_unit is not None and not unit:
+                                    u_item = self.bok_result_table.item(r, idx_unit)
+                                    unit = u_item.text() if u_item else ''
+                                if idx_stat is not None and not stat_name:
+                                    s_item = self.bok_result_table.item(r, idx_stat)
+                                    stat_name = s_item.text() if s_item else ''
+                                if idx_item1 is not None and not item1:
+                                    it_item = self.bok_result_table.item(r, idx_item1)
+                                    item1 = it_item.text() if it_item else ''
+                            label = mp.get('label', f'Series {i+1}')
+                            series_list.append({'label': label, 'times': times_s, 'values': vals_s})
+                else:
+                    # fallback: single series containing all rows
+                    times_s = []
+                    vals_s = []
+                    for r in range(rows):
+                        t_item = self.bok_result_table.item(r, idx_time)
+                        v_item = self.bok_result_table.item(r, idx_val)
+                        t = t_item.text() if t_item else ''
+                        v = v_item.text() if v_item else ''
+                        try:
+                            num = float(str(v).replace(',', ''))
+                        except Exception:
+                            num = None
+                        times_s.append(t)
+                        vals_s.append(num)
+                        if idx_unit is not None and not unit:
+                            u_item = self.bok_result_table.item(r, idx_unit)
+                            unit = u_item.text() if u_item else ''
+                        if idx_stat is not None and not stat_name:
+                            s_item = self.bok_result_table.item(r, idx_stat)
+                            stat_name = s_item.text() if s_item else ''
+                        if idx_item1 is not None and not item1:
+                            it_item = self.bok_result_table.item(r, idx_item1)
+                            item1 = it_item.text() if it_item else ''
+                    series_list.append({'label': 'Series 1', 'times': times_s, 'values': vals_s})
+            except Exception:
                 QMessageBox.information(self, "차트 없음", "플롯할 숫자 데이터가 없습니다.")
                 return
 
-            x = list(range(len(filtered)))
-            xticks = [t for t, _ in filtered]
-            y = [v for _, v in filtered]
+            # Build union of time labels with granularity handling.
+            # If any series contains monthly (or daily) granularity, produce a monthly
+            # x-axis (YYYYMM). Annual-only values will be mapped to YYYY01 (Jan of year).
+            import re as _re
+
+            def to_yyyymm(t):
+                try:
+                    s = str(t).strip()
+                    # YYYYMMDD -> YYYYMM
+                    m = _re.match(r"^(\d{4})(\d{2})(\d{2})$", s)
+                    if m:
+                        return f"{m.group(1)}{m.group(2)}"
+                    # YYYYMM
+                    m = _re.match(r"^(\d{4})(\d{2})$", s)
+                    if m:
+                        return f"{m.group(1)}{m.group(2)}"
+                    # YYYY-Qn or YYYYQn -> map to quarter start month
+                    mq = _re.search(r"(\d{4})\D*Q(\d)", s, _re.IGNORECASE)
+                    if mq:
+                        y = int(mq.group(1)); q = int(mq.group(2)); mm = (q - 1) * 3 + 1
+                        return f"{y}{mm:02d}"
+                    # YYYY-MM or YYYY.MM or YYYY/MM or YYYY M formats
+                    m2 = _re.match(r"^(\d{4})\D+(\d{1,2})", s)
+                    if m2:
+                        y = int(m2.group(1)); mm = int(m2.group(2))
+                        return f"{y}{mm:02d}"
+                    # pure year YYYY -> map to January of that year
+                    if len(s) >= 4 and s[:4].isdigit():
+                        return f"{s[:4]}01"
+                except Exception:
+                    pass
+                return None
+
+            has_monthly = False
+            for ser in series_list:
+                for t in ser.get('times', []):
+                    if t is None:
+                        continue
+                    # if any time maps to a yyyymm (non-None) and original contains month/day/quarter, treat as monthly axis
+                    s = str(t).strip()
+                    if _re.match(r"^\d{6}$", _re.sub(r"\D", "", s)) and len(_re.sub(r"\D", "", s)) >= 6:
+                        has_monthly = True
+                        break
+                    if _re.search(r"Q", s, _re.IGNORECASE):
+                        has_monthly = True
+                        break
+                if has_monthly:
+                    break
+
+            if has_monthly:
+                # build monthly union keys (YYYYMM)
+                time_set = set()
+                for ser in series_list:
+                    for t in ser.get('times', []):
+                        k = to_yyyymm(t)
+                        if k:
+                            time_set.add(k)
+                union_times = sorted(time_set, key=lambda x: int(x))
+            else:
+                # fallback to year-only axis (as before)
+                time_map = {}
+                for ser in series_list:
+                    for t in ser.get('times', []):
+                        if t is None:
+                            continue
+                        # extract year
+                        m = _re.search(r"(\d{4})", str(t))
+                        if m:
+                            kd = int(m.group(1))
+                            if kd not in time_map:
+                                time_map[kd] = str(kd)
+                union_times = [lbl for kd, lbl in sorted(time_map.items(), key=lambda kv: kv[0])]
+            if not union_times:
+                QMessageBox.information(self, "차트 없음", "플롯할 숫자 데이터가 없습니다.")
+                return
+
+            # map each series to union_times indices
+            x = list(range(len(union_times)))
+            xticks = union_times
+            plotted_series = []
+            for ser in series_list:
+                ymap = [None] * len(union_times)
+                for t, v in zip(ser.get('times', []), ser.get('values', [])):
+                    if t is None:
+                        continue
+                    if has_monthly:
+                        k = to_yyyymm(t)
+                    else:
+                        # year-only mapping
+                        m = _re.search(r"(\d{4})", str(t))
+                        k = m.group(1) if m else None
+                    if k is None:
+                        continue
+                    try:
+                        idx = union_times.index(k)
+                        ymap[idx] = v
+                    except ValueError:
+                        continue
+                plotted_series.append({'label': ser.get('label', ''), 'y': ymap})
 
             # Attempt to set a font that supports Korean on Windows/Mac/Linux
             try:
@@ -1231,19 +1483,101 @@ class VWorldAdmCodeGUI(QWidget):
             except Exception:
                 pass
 
-            fig = plt.figure(figsize=(8, 4))
-            ax = fig.add_subplot(111)
-            line, = ax.plot(x, y, marker='o', linestyle='-', label='')
+            fig = plt.figure(figsize=(10, 5))
+            base_ax = fig.add_subplot(111)
             # force default marker size to 3 for compact visuals; use doubled size when selected
             marker_size = 3
             try:
-                line.set_markersize(marker_size)
+                plt.rcParams['lines.markersize'] = marker_size
             except Exception:
+                pass
+
+            # create one axis per series (shared x-axis). The first uses the base_ax,
+            # subsequent axes are created via twinx and their spines shifted right.
+            try:
+                colors = plt.rcParams.get('axes.prop_cycle').by_key().get('color', ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7'])
+            except Exception:
+                colors = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7']
+
+            nseries = len(plotted_series)
+            axes = []
+            for si in range(nseries):
+                if si == 0:
+                    ax_i = base_ax
+                else:
+                    ax_i = base_ax.twinx()
+                    # shift the spine to the right to avoid overlapping
+                    try:
+                        ax_i.spines['right'].set_position(('axes', 1.0 + 0.12 * (si - 1)))
+                    except Exception:
+                        pass
+                axes.append(ax_i)
+
+            # if many axes, expand right margin
+            try:
+                if nseries > 1:
+                    right_margin = 0.85 + 0.12 * max(0, nseries - 2)
+                    fig.subplots_adjust(right=min(0.98, right_margin))
+            except Exception:
+                pass
+
+            plotted_series_updated = []
+            for si, ser in enumerate(plotted_series):
+                ys = ser['y']
+                # convert None to NaN so matplotlib skips plotting those points
+                ys_plot = [float(v) if v is not None else float('nan') for v in ys]
+                ax_i = axes[si]
+                color = colors[si % len(colors)]
                 try:
-                    plt.rcParams['lines.markersize'] = marker_size
+                    import math
+                    xi = [i for i, vv in enumerate(ys_plot) if not math.isnan(vv)]
+                    yi = [ys_plot[i] for i in xi]
+                    if xi:
+                        line, = ax_i.plot(xi, yi, marker='o', linestyle='-', label=ser.get('label', ''), color=color)
+                    else:
+                        # no valid points
+                        line = None
+                    if line is not None:
+                        line.set_markersize(marker_size)
+                except Exception:
+                    try:
+                        line, = ax_i.plot(x, ys_plot, marker='o', linestyle='-', label=ser.get('label', ''))
+                        line.set_markersize(marker_size)
+                    except Exception:
+                        line = None
+
+                # label each y-axis with series label (and unit if available)
+                ylbl = ser.get('label', '')
+                if unit:
+                    ylbl = f"{ylbl} ({unit})" if ylbl else unit
+                try:
+                    ax_i.set_ylabel(ylbl)
+                    # set y-axis label and tick colors to match series color
+                    try:
+                        ax_i.yaxis.label.set_color(color)
+                        ax_i.tick_params(axis='y', colors=color)
+                    except Exception:
+                        pass
                 except Exception:
                     pass
-            ax.set_ylabel(unit or '')
+
+                # per-axis y formatter
+                try:
+                    ax_i.yaxis.set_major_formatter(FuncFormatter(lambda v, pos: format(int(v), ',') if abs(v - round(v)) < 1e-6 else format(v, ',.2f')))
+                except Exception:
+                    pass
+
+                # create per-series annotation for tooltips
+                try:
+                    ann = ax_i.annotate("", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
+                                        bbox=dict(boxstyle="round", fc="w"), arrowprops=dict(arrowstyle="->"))
+                    ann.set_visible(False)
+                except Exception:
+                    ann = None
+
+                plotted_series_updated.append({'label': ser.get('label', ''), 'y': ys, 'y_plot': ys_plot, 'ax': ax_i, 'line': line, 'annot': ann})
+
+            plotted_series = plotted_series_updated
 
             # Reduce number of x-tick labels if too many
             max_xticks = 20
@@ -1291,7 +1625,7 @@ class VWorldAdmCodeGUI(QWidget):
 
             visible_labels = [xticks[i] for i in visible_x]
 
-            ax.set_xticks(visible_x)
+            base_ax.set_xticks(visible_x)
             # shorten labels to avoid overlapping long texts
             def shorten(s, n=30):
                 s = str(s)
@@ -1311,42 +1645,35 @@ class VWorldAdmCodeGUI(QWidget):
                     return str(t)
 
             year_labels = [year_label(lbl) for lbl in visible_labels]
-            ax.set_xticklabels([shorten(lbl, 20) for lbl in year_labels], rotation=45, ha='right')
+            base_ax.set_xticklabels([shorten(lbl, 20) for lbl in year_labels], rotation=45, ha='right')
 
             # bottom label with STAT_NAME and ITEM_NAME1 (truncate if very long)
             bottom_label = ' '.join(filter(None, [stat_name, item1]))
             if len(bottom_label) > 120:
                 bottom_label = bottom_label[:117] + '...'
 
-            # use legend to show a colored line/marker before the label, placed below plot
+            # create legend per plotted series; place below plot
             try:
-                if bottom_label:
-                    line.set_label(bottom_label)
-                    leg = ax.legend(loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=1, frameon=False)
+                if plotted_series:
+                    handles = [p['line'] for p in plotted_series if p.get('line') is not None]
+                    labels = [p.get('label', '') for p in plotted_series if p.get('line') is not None]
+                    leg = base_ax.legend(handles, labels, loc='lower center', bbox_to_anchor=(0.5, -0.25), ncol=1, frameon=False)
                     for text in leg.get_texts():
                         text.set_fontsize(10)
+                else:
+                    if bottom_label:
+                        fig.text(0.5, 0.01, bottom_label, ha='center', fontsize=10)
             except Exception:
-                # fallback to simple bottom text
-                fig.text(0.5, 0.01, bottom_label, ha='center', fontsize=10)
+                if bottom_label:
+                    fig.text(0.5, 0.01, bottom_label, ha='center', fontsize=10)
 
-            # format y-axis ticks with thousands separator
+            # draw faint major grid lines on the base axis
             try:
-                ax.yaxis.set_major_formatter(FuncFormatter(lambda v, pos: format(int(v), ',') if abs(v - round(v)) < 1e-6 else format(v, ',.2f')))
-            except Exception:
-                pass
-
-            # draw faint major grid lines
-            try:
-                ax.grid(True, which='major', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
+                base_ax.grid(True, which='major', color='gray', linestyle='-', linewidth=0.5, alpha=0.3)
             except Exception:
                 pass
 
             fig.tight_layout(rect=[0, 0.08, 1, 1])
-
-            # Interactive tooltip: show x label and y value when cursor near a point
-            annot = ax.annotate("", xy=(0, 0), xytext=(15, 15), textcoords="offset points",
-                                bbox=dict(boxstyle="round", fc="w"), arrowprops=dict(arrowstyle="->"))
-            annot.set_visible(False)
 
             def format_num(v):
                 try:
@@ -1358,122 +1685,153 @@ class VWorldAdmCodeGUI(QWidget):
                 except Exception:
                     return str(v)
 
-            def update_annot(ind):
-                i = ind
-                x_val = x[i]
-                y_val = y[i]
-                annot.xy = (x_val, y_val)
-                label_x = xticks[i]
-                txt = f"{label_x}\n{format_num(y_val)} {unit if unit else ''}".strip()
-                annot.set_text(txt)
-                annot.get_bbox_patch().set_alpha(0.9)
+            def update_annot(series_idx, xi):
+                try:
+                    ser = plotted_series[series_idx]
+                    y_val = ser['y'][xi]
+                    if y_val is None:
+                        return
+                    x_val = x[xi]
+                    ann = ser.get('annot')
+                    if ann is None:
+                        return
+                    ann.xy = (x_val, y_val)
+                    label_x = xticks[xi]
+                    lbl = ser.get('label', '')
+                    txt = f"{lbl}\n{label_x}\n{format_num(y_val)} {unit if unit else ''}".strip()
+                    ann.set_text(txt)
+                    try:
+                        ann.get_bbox_patch().set_alpha(0.9)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
             # selection state for ctrl-click comparisons
-            selected_idxs = []  # indices into x/y lists
+            selected_idxs = []  # list of (series_idx, x_idx) tuples
             sel_artists = []
             range_annot = fig.text(0.02, 0.95, '', transform=fig.transFigure, va='top', fontsize=9,
                                    bbox=dict(boxstyle='round', facecolor='w', alpha=0.9))
             range_annot.set_visible(False)
 
             def on_move(event):
-                vis = annot.get_visible()
-                if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
-                    # find nearest data index by x distance
-                    xd = event.xdata
-                    # nearest index
-                    i = min(range(len(x)), key=lambda j: abs(x[j] - xd))
-                    # compute pixel distance to decide proximity
-                    xpix, ypix = ax.transData.transform((x[i], y[i]))
-                    dx = xpix - event.x
-                    dy = ypix - event.y
-                    dist = (dx * dx + dy * dy) ** 0.5
-                    if dist < 10:
-                        update_annot(i)
-                        annot.set_visible(True)
+                # show per-series annot when cursor near a point on any axis
+                any_visible = False
+                if event.inaxes in axes and event.xdata is not None and event.ydata is not None:
+                    min_dist = float('inf')
+                    nearest = (None, None)
+                    for si, ser in enumerate(plotted_series):
+                        for xi, yv in enumerate(ser['y']):
+                            if yv is None:
+                                continue
+                            try:
+                                xpix, ypix = ser['ax'].transData.transform((x[xi], yv))
+                            except Exception:
+                                continue
+                            dx = xpix - event.x
+                            dy = ypix - event.y
+                            dist = (dx * dx + dy * dy) ** 0.5
+                            if dist < min_dist:
+                                min_dist = dist
+                                nearest = (si, xi)
+                    if nearest[0] is not None and min_dist < 10:
+                        # hide all annots first
+                        for ser in plotted_series:
+                            a = ser.get('annot')
+                            if a is not None:
+                                a.set_visible(False)
+                        update_annot(nearest[0], nearest[1])
+                        a = plotted_series[nearest[0]].get('annot')
+                        if a is not None:
+                            a.set_visible(True)
                         fig.canvas.draw_idle()
-                    else:
-                        if vis:
-                            annot.set_visible(False)
+                        any_visible = True
+                if not any_visible:
+                    for ser in plotted_series:
+                        a = ser.get('annot')
+                        if a is not None and a.get_visible():
+                            a.set_visible(False)
                             fig.canvas.draw_idle()
-                else:
-                    if vis:
-                        annot.set_visible(False)
-                        fig.canvas.draw_idle()
 
             def on_click(event):
-                # Left-click to select/deselect a data point (no modifier needed)
                 try:
-                    if event.inaxes != ax or event.button != 1:
+                    if event.inaxes not in axes or event.button != 1:
                         return
-                    # No modifier required: simple left-click on/near a point selects it
-                    xd = event.xdata
-                    if xd is None:
-                        return
-                    i = min(range(len(x)), key=lambda j: abs(x[j] - xd))
-                    xpix, ypix = ax.transData.transform((x[i], y[i]))
-                    dx = xpix - event.x
-                    dy = ypix - event.y
-                    dist = (dx * dx + dy * dy) ** 0.5
-                    if dist >= 10:
+                    min_dist = float('inf')
+                    nearest = (None, None)
+                    for si, ser in enumerate(plotted_series):
+                        for xi, yv in enumerate(ser['y']):
+                            if yv is None:
+                                continue
+                            try:
+                                xpix, ypix = ser['ax'].transData.transform((x[xi], yv))
+                            except Exception:
+                                continue
+                            dx = xpix - event.x
+                            dy = ypix - event.y
+                            dist = (dx * dx + dy * dy) ** 0.5
+                            if dist < min_dist:
+                                min_dist = dist
+                                nearest = (si, xi)
+                    if nearest[0] is None or min_dist >= 10:
                         return
 
-                    # toggle selection
-                    if i in selected_idxs:
-                        # deselect
-                        idx = selected_idxs.index(i)
-                        selected_idxs.pop(idx)
-                        art = sel_artists.pop(idx)
+                    si, xi = nearest
+                    sel_key = (si, xi)
+                    found = None
+                    for idx, p in enumerate(selected_idxs):
+                        if p == sel_key:
+                            found = idx
+                            break
+                    if found is not None:
+                        selected_idxs.pop(found)
+                        art = sel_artists.pop(found)
                         try:
                             art.remove()
                         except Exception:
                             pass
                     else:
-                        # add selection (limit to 2)
                         if len(selected_idxs) >= 2:
-                            # remove oldest
                             selected_idxs.pop(0)
                             art = sel_artists.pop(0)
                             try:
                                 art.remove()
                             except Exception:
                                 pass
-                        selected_idxs.append(i)
-                        # mark selected point: double size and filled red
-                        art, = ax.plot(x[i], y[i], marker='o', markersize=marker_size*2, markerfacecolor='red', markeredgecolor='red', markeredgewidth=1.0)
+                        selected_idxs.append(sel_key)
+                        yv = plotted_series[si]['y'][xi]
+                        art_ax = plotted_series[si]['ax']
+                        art, = art_ax.plot(x[xi], yv, marker='o', markersize=marker_size*2, markerfacecolor='red', markeredgecolor='red', markeredgewidth=1.0)
                         sel_artists.append(art)
-                        # activate the selected point: show annotation for it
                         try:
-                            update_annot(i)
-                            annot.set_visible(True)
+                            update_annot(si, xi)
+                            a = plotted_series[si].get('annot')
+                            if a is not None:
+                                a.set_visible(True)
                         except Exception:
                             pass
 
-                    # when two points selected, compute stats
+                    # when two points selected, compute stats based on their x indices and series
                     if len(selected_idxs) == 2:
-                        i1, i2 = selected_idxs[0], selected_idxs[1]
-                        # ensure chronological order by x index
+                        (s1, i1), (s2, i2) = selected_idxs[0], selected_idxs[1]
                         if i1 > i2:
-                            i1, i2 = i2, i1
-                        v1 = y[i1]
-                        v2 = y[i2]
+                            s1, s2, i1, i2 = s2, s1, i2, i1
+                        v1 = plotted_series[s1]['y'][i1]
+                        v2 = plotted_series[s2]['y'][i2]
                         lbl1 = xticks[i1]
                         lbl2 = xticks[i2]
 
                         def parse_year_month(t):
-                            # return (year, month) with month starting at 1
                             try:
                                 s = str(t).strip()
-                                # YYYYMM
                                 if len(s) >= 6 and s[:6].isdigit():
-                                    y = int(s[:4]); m = int(s[4:6]); return (y, m)
-                                # YYYYQn or YYYY-Qn
+                                    return (int(s[:4]), int(s[4:6]))
                                 import re
                                 m_qu = re.match(r"^(\d{4})\D*Q(\d)", s, re.IGNORECASE)
                                 if m_qu:
                                     y = int(m_qu.group(1)); q = int(m_qu.group(2)); month = (q - 1) * 3 + 1; return (y, month)
-                                # YYYY
                                 if len(s) >= 4 and s[:4].isdigit():
-                                    y = int(s[:4]); return (y, 1)
+                                    return (int(s[:4]), 1)
                                 return (None, None)
                             except Exception:
                                 return (None, None)
@@ -1494,19 +1852,9 @@ class VWorldAdmCodeGUI(QWidget):
                                 pct = None
                         if pct is not None and years and years > 0 and v1 > 0:
                             try:
-                                cagr = ( (v2 / v1) ** (1.0 / years) - 1.0 ) * 100.0
+                                cagr = ((v2 / v1) ** (1.0 / years) - 1.0) * 100.0
                             except Exception:
                                 cagr = None
-
-                        def fmt(v):
-                            try:
-                                if v is None:
-                                    return 'N/A'
-                                if abs(v - round(v)) < 1e-6:
-                                    return format(int(round(v)), ',')
-                                return format(v, ',.2f')
-                            except Exception:
-                                return str(v)
 
                         pct_txt = f"{pct:.2f}%" if pct is not None else 'N/A'
                         cagr_txt = f"{cagr:.2f}%" if cagr is not None else 'N/A'
@@ -1517,7 +1865,6 @@ class VWorldAdmCodeGUI(QWidget):
                         range_annot.set_visible(True)
                         fig.canvas.draw_idle()
                     else:
-                        # fewer than 2 selections: hide range box
                         range_annot.set_visible(False)
                         fig.canvas.draw_idle()
                 except Exception:
