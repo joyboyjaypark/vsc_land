@@ -328,6 +328,40 @@ class VWorldAdmCodeGUI(QWidget):
         self.tabs.addTab(tab_real, "부동산 거래")
         self.tabs.addTab(tab_econ, "경제지표")
 
+        # 지표누리 탭: 인증키 입력 (기본값 제공)
+        tab_ind = QWidget()
+        ind_layout = QGridLayout()
+        lbl_ind_key = QLabel("지표누리 인증키:")
+        self.edit_ind_key = QLineEdit("H4T022E22214155B")
+        self.edit_ind_key.setPlaceholderText("지표누리 인증키")
+        ind_layout.addWidget(lbl_ind_key, 0, 0)
+        ind_layout.addWidget(self.edit_ind_key, 0, 1)
+        # URL input below the key (default value)
+        lbl_ind_url = QLabel("지표누리 URL:")
+        self.edit_ind_url = QLineEdit("https://www.index.go.kr/unity/openApi/xml_idx.do?userId=youngbbo&idntfcId=H4T022E22214155B")
+        self.edit_ind_url.setPlaceholderText("지표누리 API URL (기본)")
+        ind_layout.addWidget(lbl_ind_url, 1, 0)
+        ind_layout.addWidget(self.edit_ind_url, 1, 1, 1, 3)
+        # 리스트받기 버튼
+        self.btn_ind_list = QPushButton("리스트받기")
+        self.btn_ind_list.clicked.connect(self.on_ind_list)
+        ind_layout.addWidget(self.btn_ind_list, 2, 0)
+        # 결과 테이블
+        self.ind_table = QTableWidget()
+        self.ind_table.setColumnCount(0)
+        self.ind_table.setRowCount(0)
+        self.ind_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        try:
+            self.ind_table.setSortingEnabled(True)
+            th = self.ind_table.horizontalHeader()
+            th.setSectionsClickable(True)
+            th.setSortIndicatorShown(True)
+        except Exception:
+            pass
+        ind_layout.addWidget(self.ind_table, 3, 0, 1, 4)
+        tab_ind.setLayout(ind_layout)
+        self.tabs.addTab(tab_ind, "지표누리")
+
         # 출처 탭: 텍스트 박스 추가
         tab_source = QWidget()
         source_layout = QVBoxLayout()
@@ -350,7 +384,11 @@ class VWorldAdmCodeGUI(QWidget):
             "1. 경제통계\n"
             "  - 한국은행 경제통계시스템\n"
             "  - https://ecos.bok.or.kr/#/\n"
-            "  - 한국은행 인증키 : TZ9P9GAR03LBXV2J3QGU"
+            "  - 한국은행 인증키 : TZ9P9GAR03LBXV2J3QGU\n\n"
+            "[지표누리]\n"
+            " - 지표누리공유서비스\n"
+            " - https://www.index.go.kr/unity/openApi/openApiIntro.do\n"
+            " - 인증키 : \tH4T022E22214155B"
         )
         source_layout.addWidget(lbl_source)
         source_layout.addWidget(self.source_text)
@@ -800,6 +838,80 @@ class VWorldAdmCodeGUI(QWidget):
 
         if not nodes:
             QMessageBox.information(self, "결과 없음", "조회된 결과가 없습니다.")
+
+    def on_ind_list(self):
+        # Fetch and display XML from the 지표누리 URL in the ind tab
+        url = self.edit_ind_url.text().strip() if getattr(self, 'edit_ind_url', None) else ''
+        if not url:
+            QMessageBox.warning(self, "입력 오류", "지표누리 URL을 입력하세요.")
+            return
+        try:
+            resp = requests.get(url, timeout=20)
+            resp.raise_for_status()
+            data = resp.content
+        except Exception as e:
+            QMessageBox.critical(self, "요청 실패", f"요청 중 오류가 발생했습니다:\n{e}")
+            return
+
+        try:
+            root = ET.fromstring(data)
+        except Exception as e:
+            QMessageBox.critical(self, "파싱 오류", f"응답 XML 파싱 실패:\n{e}")
+            return
+
+        # Try common item containers
+        items = root.findall('.//item') or root.findall('.//list') or root.findall('.//row') or []
+
+        # If none found, search for a parent with repeated child tags
+        if not items:
+            for parent in root.iter():
+                child_tags = [c.tag for c in list(parent) if c.tag]
+                if not child_tags:
+                    continue
+                # find tag with highest occurrence
+                from collections import Counter
+                cnt = Counter(child_tags)
+                most_common_tag, count = cnt.most_common(1)[0]
+                if count > 1:
+                    items = parent.findall(most_common_tag)
+                    if items:
+                        break
+
+        # If still no repeated items, treat root's immediate children as a single-row table
+        if not items:
+            cols = [c.tag for c in list(root)]
+            rows = [[(c.text or '').strip() if c is not None and c.text else '' for c in list(root)]] if cols else []
+            if not rows:
+                QMessageBox.information(self, "결과 없음", "표로 표시할 반복 항목을 찾을 수 없습니다.")
+                return
+            # populate table
+            self.ind_table.setColumnCount(len(cols))
+            self.ind_table.setHorizontalHeaderLabels(cols)
+            self.ind_table.setRowCount(len(rows))
+            for r, row in enumerate(rows):
+                for c, val in enumerate(row):
+                    self.ind_table.setItem(r, c, QTableWidgetItem(val))
+            return
+
+        # Build column set from all items' child tags
+        col_set = []
+        for it in items:
+            for child in list(it):
+                if child.tag not in col_set:
+                    col_set.append(child.tag)
+
+        # populate rows
+        self.ind_table.setColumnCount(len(col_set))
+        self.ind_table.setHorizontalHeaderLabels(col_set)
+        self.ind_table.setRowCount(len(items))
+        for r, it in enumerate(items):
+            for c, tag in enumerate(col_set):
+                try:
+                    txt = it.findtext(tag) or ''
+                except Exception:
+                    txt = ''
+                txt = (txt or '').strip()
+                self.ind_table.setItem(r, c, QTableWidgetItem(txt))
 
         # 자동으로 첫 항목의 세부목록도 불러오도록 (있다면)
         try:
