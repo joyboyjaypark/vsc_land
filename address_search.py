@@ -82,6 +82,12 @@ class VWorldAdmCodeGUI(QWidget):
 
         # 레이아웃
         layout = QGridLayout()
+        try:
+            layout.setContentsMargins(6, 6, 6, 6)
+            layout.setHorizontalSpacing(8)
+            layout.setVerticalSpacing(6)
+        except Exception:
+            pass
         layout.addWidget(lbl_key,      0, 0)
         layout.addWidget(self.edit_key, 0, 1)
         # 지역 그룹 박스에 시/도, 시군구, 읍면동 및 행정코드 배치
@@ -96,7 +102,27 @@ class VWorldAdmCodeGUI(QWidget):
         group_layout.addWidget(lbl_selected, 3, 0)
         group_layout.addWidget(self.edit_selected_admcode, 3, 1)
         group_region.setLayout(group_layout)
-        layout.addWidget(group_region, 2, 0)
+        # 거래유형 프레임 추가 (지역 프레임의 왼쪽)
+        group_tr_type = QGroupBox("거래유형")
+        tr_layout = QGridLayout()
+        self.chk_sale = QCheckBox("매매")
+        self.chk_rent = QCheckBox("전월세")
+        # 기본: 매매 체크되어 있음
+        try:
+            self.chk_sale.setChecked(True)
+        except Exception:
+            pass
+        tr_layout.addWidget(self.chk_sale, 0, 0)
+        tr_layout.addWidget(self.chk_rent, 1, 0)
+        group_tr_type.setLayout(tr_layout)
+        layout.addWidget(group_tr_type, 2, 0)
+        layout.addWidget(group_region, 2, 1)
+        # 체크박스 변경시 표시 결과를 갱신하도록 연결
+        try:
+            self.chk_sale.stateChanged.connect(lambda _: self.apply_apt_filters())
+            self.chk_rent.stateChanged.connect(lambda _: self.apply_apt_filters())
+        except Exception:
+            pass
 
         # --- 아파트 실거래 입력 및 결과 ---
         lbl_apt_key = QLabel("Service Key:")
@@ -165,10 +191,21 @@ class VWorldAdmCodeGUI(QWidget):
         self.edit_apt_url.setReadOnly(True)
 
         self.apt_table = QTableWidget()
+        try:
+            self.apt_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        except Exception:
+            pass
         apt_headers = [
             "아파트명", "아파트동", "전용면적", "계약일", "거래금액(만원)", "층", "건축년도", "법정동", "지번", "지역코드",
             "거래유형", "중개사소재지", "등기일자", "거래주체_매도자", "거래주체_매수자", "토지임대부여부"
         ]
+        # 전월세 관련 추가 열: '월세(만원)'은 거래금액 뒤(층 앞)에 배치
+        extra_rent_cols = ["계약기간", "ContractType", "갱신권사용", "종전보증금", "종전월세"]
+        # insert 월세(만원) at index 5 (after 거래금액, before 층)
+        apt_headers.insert(5, "월세(만원)")
+        apt_headers.extend(extra_rent_cols)
+        # 기본 헤더 보관: 필요 시 결과에 맞춰 재구성하는 기준으로 사용
+        self.apt_default_headers = list(apt_headers)
         self.apt_table.setColumnCount(len(apt_headers))
         self.apt_table.setHorizontalHeaderLabels(apt_headers)
         hdr = self.apt_table.horizontalHeader()
@@ -219,17 +256,18 @@ class VWorldAdmCodeGUI(QWidget):
         gr_layout.addWidget(lbl_apt_url, 3, 0)
         gr_layout.addWidget(self.edit_apt_url, 3, 1, 1, 2)
         group_range.setLayout(gr_layout)
-        # 범위설정 프레임을 지역 프레임 오른쪽에 배치
-        layout.addWidget(group_range, 2, 1)
+        # 범위설정 프레임을 지역 프레임 오른쪽(거래유형 오른쪽)으로 배치
+        layout.addWidget(group_range, 2, 2)
 
-        # 버튼과 테이블을 한 줄 위로 이동하여 레이아웃을 압축
+        # 버튼/진행률/표를 왼쪽 영역으로 이동하여 빈칸을 채움
         layout.addWidget(self.btn_apt_fetch, 3, 0)
         layout.addWidget(self.btn_apt_save, 3, 1)
         layout.addWidget(self.btn_apt_cancel, 3, 2)
-        layout.addWidget(self.apt_table, 4, 0, 1, 2)
-        # 상태 표시줄: 상태 텍스트(왼쪽) + 진행바(오른쪽)
+        # 테이블을 왼쪽 영역에 확장 (왼쪽 3열을 채움)
+        layout.addWidget(self.apt_table, 4, 0, 1, 3)
+        # 상태 표시줄: 왼쪽 텍스트 + 진행바(오른쪽으로 확장)
         layout.addWidget(self.status_label, 5, 0)
-        layout.addWidget(self.progress_bar, 5, 1)
+        layout.addWidget(self.progress_bar, 5, 1, 1, 2)
 
         # Put existing real-estate layout into first tab and add an economic-indicators tab
         self.tabs = QTabWidget()
@@ -241,6 +279,12 @@ class VWorldAdmCodeGUI(QWidget):
         # Group box to contain inputs (Data 1)
         group_data1 = QGroupBox("Data 1")
         group_layout = QGridLayout()
+        try:
+            # Keep Data 1 frame height constant regardless of window resize
+            group_data1.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            group_data1.setFixedHeight(260)
+        except Exception:
+            pass
         # 경제지표 탭: 간소화된 UI — 인증키 입력 + 결과 콤보
         lbl_bok_key = QLabel("한국은행 인증키:")
         self.edit_bok_key = QLineEdit("TZ9P9GAR03LBXV2J3QGU")
@@ -408,11 +452,44 @@ class VWorldAdmCodeGUI(QWidget):
         except Exception:
             one_third = 233
         try:
-            group_region.setFixedWidth(one_third)
+            # 이제 세 개의 그룹박스가 있으므로 너비를 4로 나눠줍니다 (여유 공간 포함)
+            one_part = int(self.width() / 4)
+        except Exception:
+            one_part = 180
+        try:
+            # 거래유형 프레임은 더 작게 유지
+            tr_w = max(60, one_part // 3)
+            try:
+                group_tr_type.setMinimumWidth(tr_w)
+            except Exception:
+                pass
         except Exception:
             pass
         try:
-            group_range.setFixedWidth(one_third)
+            # 지역 프레임 기본값은 one_part * 1.6 (약간 축소)
+            region_w = int(one_part * 1.6)
+            range_w = int(one_part * 1.8)
+            if region_w < 120:
+                region_w = 120
+            if range_w < 120:
+                range_w = 120
+            try:
+                group_region.setMinimumWidth(region_w)
+            except Exception:
+                pass
+            try:
+                group_range.setMinimumWidth(range_w)
+            except Exception:
+                pass
+            # API Key / Service Key 입력창의 오른쪽 끝을 `범위설정` 프레임과 맞춤
+            try:
+                key_w = max(120, range_w - 16)
+                if hasattr(self, 'edit_key'):
+                    self.edit_key.setFixedWidth(key_w)
+                if hasattr(self, 'edit_apt_key'):
+                    self.edit_apt_key.setFixedWidth(key_w)
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -420,8 +497,29 @@ class VWorldAdmCodeGUI(QWidget):
         QTimer.singleShot(0, self.send_request)
         QTimer.singleShot(0, self.on_bok_search)
 
-        # worker handle
-        self._apt_worker = None
+    def resizeEvent(self, event):
+        try:
+            super().resizeEvent(event)
+        except Exception:
+            pass
+        try:
+            # make apt_table slightly narrower than the tab width (leave small margin)
+            if hasattr(self, 'tabs') and hasattr(self, 'apt_table'):
+                tab_w = self.tabs.width() or self.width()
+                margin = 6
+                new_w = tab_w - margin
+                if new_w > 100:
+                    try:
+                        self.apt_table.setMaximumWidth(new_w)
+                    except Exception:
+                        try:
+                            self.apt_table.setFixedWidth(new_w)
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
+        # Note: do NOT clear worker handle here; resize should not affect worker lifecycle
 
 
  
@@ -2159,7 +2257,11 @@ class VWorldAdmCodeGUI(QWidget):
         self.btn_apt_save.setEnabled(False)
 
         # create worker (pass list of LAWD codes)
-        self._apt_worker = AptFetchWorker(lawd_list, months, key)
+        try:
+            include_rent_flag = bool(getattr(self, 'chk_rent', None) and self.chk_rent.isChecked())
+        except Exception:
+            include_rent_flag = False
+        self._apt_worker = AptFetchWorker(lawd_list, months, key, include_rent=include_rent_flag)
 
         def _on_progress(cur, total):
             try:
@@ -2183,7 +2285,53 @@ class VWorldAdmCodeGUI(QWidget):
                 try:
                     sel_dong = self.combo_dong.currentText()
                     if sel_dong and sel_dong not in ("선택", "없음"):
-                        rows = [r for r in rows if (r[7] or "").strip() == sel_dong]
+                        # find 법정동(umdNm) column index from default headers if possible
+                        umd_idx = None
+                        try:
+                            if hasattr(self, 'apt_default_headers') and self.apt_default_headers:
+                                for ii, hh in enumerate(self.apt_default_headers):
+                                    try:
+                                        if hh and ('법정동' in hh or 'umd' in hh.lower() or '법정' in hh):
+                                            umd_idx = ii
+                                            break
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            umd_idx = None
+                        if umd_idx is None:
+                            umd_idx = 7
+
+                        def _norm(s):
+                            try:
+                                if s is None:
+                                    return ''
+                                t = str(s).strip().lower()
+                                # remove whitespace and common suffixes for more flexible matching
+                                for suf in ('동', '읍', '면'):
+                                    if t.endswith(suf):
+                                        t = t[:-len(suf)]
+                                t = t.replace(' ', '')
+                                return t
+                            except Exception:
+                                return ''
+
+                        n_sel = _norm(sel_dong)
+                        new_rows = []
+                        for r in rows:
+                            try:
+                                val = ''
+                                if isinstance(r, (list, tuple)) and umd_idx < len(r):
+                                    val = r[umd_idx] or ''
+                                else:
+                                    # fallback to typical position
+                                    val = (r[7] if len(r) > 7 else '') or ''
+                                n_val = _norm(val)
+                                # match if selected value is substring of row value or vice versa
+                                if n_sel and (n_sel in n_val or n_val in n_sel):
+                                    new_rows.append(r)
+                            except Exception:
+                                continue
+                        rows = new_rows
                 except Exception:
                     pass
 
@@ -2191,7 +2339,11 @@ class VWorldAdmCodeGUI(QWidget):
                 rows.sort(key=lambda r: _parse_date(r[3] if len(r) > 3 else ""))
                 self.apt_rows_master = rows
                 self.apt_filters = {}
-                self.populate_apt_table(rows)
+                # apply current 거래유형 체크박스 필터 when populating
+                try:
+                    self.apply_apt_filters()
+                except Exception:
+                    self.populate_apt_table(rows)
                 self.btn_apt_save.setEnabled(bool(rows))
                 self.status_label.setText(f"완료: {len(rows)}건")
                 try:
@@ -2201,8 +2353,11 @@ class VWorldAdmCodeGUI(QWidget):
                     pass
             finally:
                 self.btn_apt_fetch.setEnabled(True)
-                self.btn_apt_cancel.setEnabled(False)
-                self._apt_worker = None
+                # do not clear _apt_worker here; wait for thread's finished signal to cleanup
+                try:
+                    self.btn_apt_cancel.setEnabled(False)
+                except Exception:
+                    pass
 
         def _on_error(msg):
             QMessageBox.critical(self, "요청 실패", msg)
@@ -2214,8 +2369,38 @@ class VWorldAdmCodeGUI(QWidget):
                 pass
 
         self._apt_worker.progress.connect(_on_progress)
-        self._apt_worker.finished.connect(_on_finished)
+        # connect worker result signal (renamed to avoid shadowing QThread.finished)
+        self._apt_worker.results_ready.connect(_on_finished)
         self._apt_worker.error.connect(_on_error)
+        # ensure QThread's built-in finished deletes the thread object
+        try:
+            self._apt_worker.finished.connect(self._apt_worker.deleteLater)
+        except Exception:
+            pass
+        # when the QThread object actually finishes, clear our reference to it
+        def _on_thread_obj_finished():
+            try:
+                sender = None
+                try:
+                    sender = self.sender()
+                except Exception:
+                    sender = None
+                # only clear if the finished sender matches current worker
+                if getattr(self, '_apt_worker', None) is sender or sender is None:
+                    try:
+                        self._apt_worker = None
+                    except Exception:
+                        pass
+                try:
+                    self.btn_apt_cancel.setEnabled(False)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        try:
+            self._apt_worker.finished.connect(_on_thread_obj_finished)
+        except Exception:
+            pass
         self._apt_worker.start()
         # enable cancel button while running
         try:
@@ -2407,6 +2592,65 @@ class VWorldAdmCodeGUI(QWidget):
                         return False
                 return True
             rows = [r for r in self.apt_rows_master if matches_all(r)]
+        # 추가 필터: 거래유형 체크박스에 따라 매매/전월세만 표시
+        try:
+            # determine which column index contains 거래유형 dynamically
+            try:
+                tr_idx = 10
+                if hasattr(self, 'apt_default_headers') and self.apt_default_headers:
+                    try:
+                        tr_idx = self.apt_default_headers.index('거래유형')
+                    except Exception:
+                        # attempt case-insensitive substring match
+                        tr_idx = None
+                        for ii, hh in enumerate(self.apt_default_headers):
+                            try:
+                                if hh and '거래' in hh and '유형' in hh:
+                                    tr_idx = ii
+                                    break
+                            except Exception:
+                                continue
+                        if tr_idx is None:
+                            tr_idx = 10
+            except Exception:
+                tr_idx = 10
+
+            def is_rent(row):
+                try:
+                    if not isinstance(row, (list, tuple)):
+                        return False
+                    t = ''
+                    if tr_idx < len(row):
+                        t = (row[tr_idx] or "").lower()
+                    else:
+                        # fallback: try typical dealingGbn positions
+                        t = (row[10] if len(row) > 10 else "") or ""
+                        t = str(t).lower()
+                except Exception:
+                    t = ""
+                rent_keywords = ["전세", "월세", "jeonse", "rent", "임대"]
+                for kw in rent_keywords:
+                    if kw in t:
+                        return True
+                return False
+
+            filtered = []
+            for r in rows:
+                try:
+                    if is_rent(r):
+                        if getattr(self, 'chk_rent', None) and self.chk_rent.isChecked():
+                            filtered.append(r)
+                    else:
+                        # 기본적으로 매매로 간주
+                        if getattr(self, 'chk_sale', None) and self.chk_sale.isChecked():
+                            filtered.append(r)
+                except Exception:
+                    # on error, include the row to avoid silent data loss
+                    filtered.append(r)
+            rows = filtered
+        except Exception:
+            pass
+
         self.populate_apt_table(rows)
 
     def _months_between(self, from_ym, to_ym):
@@ -2448,15 +2692,64 @@ class VWorldAdmCodeGUI(QWidget):
             self.apt_table.clearContents()
         except Exception:
             pass
+        # Recreate table columns/headers based on actual rows content
+        try:
+            max_cols = 0
+            for r in rows:
+                try:
+                    if isinstance(r, (list, tuple)):
+                        max_cols = max(max_cols, len(r))
+                except Exception:
+                    continue
+            if max_cols <= 0:
+                max_cols = self.apt_table.columnCount() or 0
+            self.apt_table.setColumnCount(max_cols)
+            # Build header labels: prefer default headers where available, otherwise generic '열 N'
+            header_labels = []
+            for i in range(max_cols):
+                lbl = None
+                try:
+                    if hasattr(self, 'apt_default_headers') and i < len(self.apt_default_headers):
+                        lbl = self.apt_default_headers[i]
+                except Exception:
+                    lbl = None
+                if not lbl:
+                    lbl = f"열 {i+1}"
+                header_labels.append(lbl)
+            try:
+                self.apt_table.setHorizontalHeaderLabels(header_labels)
+            except Exception:
+                pass
+        except Exception:
+            # fallback: preserve existing columns
+            pass
         self.apt_table.setRowCount(len(rows))
+        # determine numeric columns indexes from header labels
+        sale_col_index = None
+        rent_col_index = None
+        try:
+            for i in range(self.apt_table.columnCount()):
+                try:
+                    hi = self.apt_table.horizontalHeaderItem(i)
+                    if not hi:
+                        continue
+                    t = hi.text() or ""
+                    if t == "거래금액(만원)":
+                        sale_col_index = i
+                    if t == "월세(만원)":
+                        rent_col_index = i
+                except Exception:
+                    continue
+        except Exception:
+            sale_col_index = 4
         for r, row in enumerate(rows):
             for c, val in enumerate(row):
                 try:
                     txt = val if isinstance(val, str) else str(val)
                 except Exception:
                     txt = ""
-                # format 거래금액(만원) column with thousand separators (column index 4)
-                if c == 4:
+                # format 거래금액(만원) and 월세(만원) columns with thousand separators
+                if c == (sale_col_index if sale_col_index is not None else 4) or (rent_col_index is not None and c == rent_col_index):
                     num_val = None
                     try:
                         import re
@@ -2502,6 +2795,41 @@ class VWorldAdmCodeGUI(QWidget):
             QMessageBox.information(self, "저장 성공", f"{filename} 으로 저장되었습니다.")
         except Exception as e:
             QMessageBox.critical(self, "저장 실패", str(e))
+
+    def closeEvent(self, event):
+        # Ensure any running worker is asked to stop and waited on before closing
+        try:
+            w = getattr(self, '_apt_worker', None)
+            if w is not None and getattr(w, 'isRunning', lambda: False)():
+                try:
+                    self.status_label.setText('종료: 작업 취소 중...')
+                except Exception:
+                    pass
+                try:
+                    w.stop()
+                except Exception:
+                    pass
+                try:
+                    # wait up to 3 seconds for clean stop
+                    w.wait(3000)
+                except Exception:
+                    pass
+                # if still running, attempt to terminate as last resort
+                try:
+                    if getattr(w, 'isRunning', lambda: False)():
+                        w.terminate()
+                        w.wait(2000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            super().closeEvent(event)
+        except Exception:
+            try:
+                event.accept()
+            except Exception:
+                pass
 
 
 class AptTradeGUI(QWidget):
@@ -2779,10 +3107,10 @@ class AptTradeGUI(QWidget):
 # Worker thread to fetch apartment trade data to avoid blocking UI
 class AptFetchWorker(QThread):
     progress = pyqtSignal(int, int)  # current, total
-    finished = pyqtSignal(list)
+    results_ready = pyqtSignal(list)
     error = pyqtSignal(str)
 
-    def __init__(self, lawd, months, service_key, parent=None):
+    def __init__(self, lawd, months, service_key, include_rent=False, parent=None):
         super().__init__(parent)
         # `lawd` may be a single LAWD string or a list of LAWD strings.
         if isinstance(lawd, (list, tuple)):
@@ -2791,6 +3119,7 @@ class AptFetchWorker(QThread):
             self.lawd_list = [lawd]
         self.months = months
         self.service_key = service_key
+        self.include_rent = bool(include_rent)
         self._stop = False
 
     def stop(self):
@@ -2922,13 +3251,86 @@ class AptFetchWorker(QThread):
                         _find_text(it, ["buyer", "거래주체정보_매수자", "매수자", "tradePartBuyer"]),
                         _find_text(it, ["rentYn", "토지임대부", "landLease", "isLandLeaseApt"]),
                     ]
+                    # pad trade rows with empty rent-related columns to keep column alignment
+                    # insert empty 월세 column at position 5, and pad remaining 5 rent-related columns at end
+                    try:
+                        row.insert(5, "")
+                    except Exception:
+                        pass
+                    row.extend(["", "", "", "", ""])  # 계약기간, ContractType, 갱신권사용, 종전보증금, 종전월세
                     rows.append(row)
+                # if rent data requested, also call rent API for same lawd/ym
+                if getattr(self, 'include_rent', False):
+                    try:
+                        url_r = "https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent"
+                        params_r = {
+                            "serviceKey": requests.utils.unquote(self.service_key),
+                            "LAWD_CD": lawd,
+                            "DEAL_YMD": ym,
+                            "pageNo": "1",
+                            "numOfRows": "1000",
+                        }
+                        resp_r = requests.get(url_r, params=params_r, timeout=30, headers=headers)
+                        resp_r.raise_for_status()
+                        # parse rent XML
+                        try:
+                            root_r = ET.fromstring(resp_r.content)
+                            items_r = root_r.findall("body/items/item")
+                        except Exception:
+                            items_r = []
+                        for it2 in items_r:
+                            # rent items may use different tag names; use _find_text to discover
+                            trade_date_r = f"{it2.findtext('dealYear') or ''}-{it2.findtext('dealMonth') or ''}-{it2.findtext('dealDay') or ''}"
+                            # deposit(보증금) -> 거래금액, monthlyRent -> 월세(만원)
+                            raw_deposit = _find_text(it2, ["deposit", "보증금", "전세금", "rentMoney", "depositAmount"]) or ""
+                            deposit_norm = _norm_amount(raw_deposit)
+                            raw_month = _find_text(it2, ["monthlyRent", "월세", "rentFee"]) or ""
+                            month_norm = _norm_amount(raw_month)
+                            rgst_raw_r = _find_text(it2, ["rgstDate", "등기일자", "registrationDate"]) or ""
+                            rgst_norm_r = _norm_rgst(rgst_raw_r)
+                            # additional rent-specific fields
+                            contract_term = _find_text(it2, ["contractTerm", "계약기간"]) or ""
+                            contract_type = _find_text(it2, ["contractType", "ContractType"]) or ""
+                            use_rr = _find_text(it2, ["useRRRight", "갱신권사용"]) or ""
+                            pre_deposit = _find_text(it2, ["preDeposit", "종전보증금"]) or ""
+                            pre_month = _find_text(it2, ["preMonthlyRent", "종전월세"]) or ""
+
+                            row_r = [
+                                it2.findtext("aptNm") or _find_text(it2, ["aptName", "단지명"]),
+                                it2.findtext("aptDong") or _find_text(it2, ["aptDong", "동"]),
+                                it2.findtext("excluUseAr") or _find_text(it2, ["excluUseAr", "전용면적"]),
+                                trade_date_r,
+                                deposit_norm,
+                                it2.findtext("floor") or _find_text(it2, ["floor", "층"]),
+                                it2.findtext("buildYear") or _find_text(it2, ["buildYear", "건축년도"]),
+                                it2.findtext("umdNm") or _find_text(it2, ["umdNm", "법정동"]),
+                                it2.findtext("jibun") or _find_text(it2, ["jibun", "지번"]),
+                                it2.findtext("sggCd") or _find_text(it2, ["sggCd", "지역코드"]),
+                                # 거래유형: 전월세 구분
+                                (it2.findtext("dealingGbn") or _find_text(it2, ["tradeType", "거래유형", "dealType"])) or "전월세",
+                                _find_text(it2, ["estateAgentSggNm", "중개사소재지"]),
+                                rgst_norm_r,
+                                _find_text(it2, ["slerGbn", "seller"]),
+                                _find_text(it2, ["buyer", "매수자"]),
+                                _find_text(it2, ["rentYn", "토지임대부"]),
+                            ]
+                            # insert 월세 value at index 5 (between 거래금액 and 층), then append remaining rent-specific columns
+                            try:
+                                row_r.insert(5, month_norm)
+                            except Exception:
+                                # if insert fails, append at end
+                                row_r.append(month_norm)
+                            row_r.extend([contract_term, contract_type, use_rr, pre_deposit, pre_month])
+                            rows.append(row_r)
+                    except Exception:
+                        # ignore rent errors per-month and continue
+                        pass
                 step += 1
                 try:
                     self.progress.emit(min(step, total), total)
                 except Exception:
                     pass
-        self.finished.emit(rows)
+        self.results_ready.emit(rows)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
