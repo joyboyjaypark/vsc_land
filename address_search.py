@@ -372,6 +372,34 @@ class VWorldAdmCodeGUI(QWidget):
         self.tabs.addTab(tab_real, "부동산 거래")
         self.tabs.addTab(tab_econ, "경제지표")
 
+        # 통계청 탭: 기본 키 입력 + 서비스 목록 + 결과 표
+        tab_kostat = QWidget()
+        kostat_layout = QGridLayout()
+        lbl_kostat_key = QLabel("통계청 인증키:")
+        self.edit_kostat_key = QLineEdit("NmY3NzgyMTQ2ZjZiMGNkODQxOThmNGE3NDJkMjcyZDU=")
+        self.edit_kostat_key.setPlaceholderText("통계청(Open API) 인증키를 입력하세요")
+        kostat_layout.addWidget(lbl_kostat_key, 0, 0)
+        kostat_layout.addWidget(self.edit_kostat_key, 0, 1)
+
+        lbl_kostat_list = QLabel("서비스 목록:")
+        self.kostat_combo = QComboBox()
+        self.kostat_combo.setEditable(False)
+        kostat_layout.addWidget(lbl_kostat_list, 1, 0)
+        kostat_layout.addWidget(self.kostat_combo, 1, 1, 1, 4)
+
+        self.btn_kostat_list = QPushButton("리스트받기")
+        self.btn_kostat_list.clicked.connect(self.on_kostat_list)
+        kostat_layout.addWidget(self.btn_kostat_list, 2, 0)
+
+        self.kostat_table = QTableWidget()
+        self.kostat_table.setColumnCount(0)
+        self.kostat_table.setRowCount(0)
+        self.kostat_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        kostat_layout.addWidget(self.kostat_table, 3, 0, 1, 6)
+
+        tab_kostat.setLayout(kostat_layout)
+        self.tabs.addTab(tab_kostat, "통계청")
+
         # 지표누리 탭: 인증키 입력 (기본값 제공)
         tab_ind = QWidget()
         ind_layout = QGridLayout()
@@ -1017,6 +1045,23 @@ class VWorldAdmCodeGUI(QWidget):
         try:
             if self.bok_combo.count() > 0:
                 QTimer.singleShot(200, lambda: self.on_bok_select())
+        except Exception:
+            pass
+
+    def on_kostat_list(self):
+        # Placeholder handler for 통계청 tab; implement KOSIS API calls as needed.
+        key = self.edit_kostat_key.text().strip() if getattr(self, 'edit_kostat_key', None) else ''
+        if not key:
+            QMessageBox.warning(self, "입력 오류", "통계청 인증키를 입력하세요.")
+            return
+        # For now, just clear and show a placeholder message in the table
+        try:
+            self.kostat_table.clearContents()
+            self.kostat_table.setRowCount(0)
+            self.kostat_table.setColumnCount(1)
+            self.kostat_table.setHorizontalHeaderLabels(["메모"])
+            self.kostat_table.setRowCount(1)
+            self.kostat_table.setItem(0, 0, QTableWidgetItem("통계청 API 호출 로직을 구현하세요."))
         except Exception:
             pass
 
