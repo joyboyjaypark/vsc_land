@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QGroupBox,
     QSizePolicy, QProgressBar, QInputDialog, QTabWidget,
     QVBoxLayout, QTextEdit,
-    QListWidget, QListWidgetItem,
+    QListWidget, QListWidgetItem, QDialog, QDialogButtonBox, QCompleter, QMenu,
 )
 from PyQt5.QtWidgets import QHBoxLayout, QCheckBox
 from PyQt5.QtGui import QColor, QBrush
@@ -36,6 +36,77 @@ class NumericItem(QTableWidgetItem):
         except Exception:
             pass
         return super().__lt__(other)
+
+
+class ColumnSearchDialog(QDialog):
+    """열 단위 텍스트 검색 + 자동완성 + 체크박스 목록 선택 다이얼로그
+
+    items: list of tuples (cell_text, row_index, full_row)
+    """
+    def __init__(self, parent, items, col, default_checked=False):
+        super().__init__(parent)
+        self.items = items
+        self.col = col
+        self.default_checked = default_checked
+        self.setWindowTitle("열 텍스트 검색 및 선택")
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel(f"열 {col} 검색 및 선택"))
+        self.edit = QLineEdit()
+        vals = list(dict.fromkeys([v for v,_,_ in items if v]))
+        try:
+            comp = QCompleter(vals)
+            comp.setCaseSensitivity(Qt.CaseInsensitive)
+            self.edit.setCompleter(comp)
+        except Exception:
+            pass
+        self.edit.setPlaceholderText("검색어 입력 (자동완성 이용 가능)")
+        self.edit.textChanged.connect(self.update_list)
+        layout.addWidget(self.edit)
+        self.listw = QListWidget()
+        layout.addWidget(self.listw)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        layout.addWidget(btns)
+        self.setLayout(layout)
+        self.update_list()
+
+    def update_list(self):
+        q = (self.edit.text() or "").strip().lower()
+        self.listw.clear()
+        # collect unique display values -> list of indices
+        entries = {}
+        for val, idx, row in self.items:
+            display = val if val else "<빈값>"
+            key = (display or "").strip()
+            lkey = key.lower()
+            if q and q not in lkey:
+                continue
+            if lkey not in entries:
+                entries[lkey] = { 'display': display, 'indices': [] }
+            entries[lkey]['indices'].append(idx)
+
+        # iterate in ascending order of display (case-insensitive)
+        for lkey in sorted(entries.keys()):
+            display = entries[lkey]['display']
+            indices = entries[lkey]['indices']
+            it = QListWidgetItem(display)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if getattr(self, 'default_checked', False) else Qt.Unchecked)
+            it.setData(Qt.UserRole, indices)
+            self.listw.addItem(it)
+
+    def get_selected_indices(self):
+        res = []
+        for i in range(self.listw.count()):
+            it = self.listw.item(i)
+            if it.checkState() == Qt.Checked:
+                d = it.data(Qt.UserRole)
+                if isinstance(d, (list, tuple)):
+                    res.extend(d)
+                else:
+                    res.append(d)
+        return res
 
 
 class VWorldAdmCodeGUI(QWidget):
@@ -641,6 +712,11 @@ class VWorldAdmCodeGUI(QWidget):
             if adm_names:
                 self.combo_sido.addItem("선택")
                 self.combo_sido.addItems(adm_names)
+                try:
+                    # show all items in the popup when clicked
+                    self.combo_sido.setMaxVisibleItems(len(adm_names) + 1)
+                except Exception:
+                    pass
             else:
                 self.combo_sido.addItem("없음")
             self.combo_sido.blockSignals(False)
@@ -753,6 +829,10 @@ class VWorldAdmCodeGUI(QWidget):
         if sigungu_names:
             self.combo_sigungu.addItem("선택")
             self.combo_sigungu.addItems(sigungu_names)
+            try:
+                self.combo_sigungu.setMaxVisibleItems(len(sigungu_names) + 1)
+            except Exception:
+                pass
         else:
             self.combo_sigungu.addItem("없음")
         self.combo_sigungu.blockSignals(False)
@@ -878,6 +958,10 @@ class VWorldAdmCodeGUI(QWidget):
         if dong_names:
             self.combo_dong.addItem("선택")
             self.combo_dong.addItems(dong_names)
+            try:
+                self.combo_dong.setMaxVisibleItems(len(dong_names) + 1)
+            except Exception:
+                pass
         else:
             self.combo_dong.addItem("없음")
         self.combo_dong.blockSignals(False)
@@ -2238,6 +2322,29 @@ class VWorldAdmCodeGUI(QWidget):
         try:
             self.apt_filters = {}
             self.apt_rows_master = []
+            try:
+                # clear any search-based filters and remove header buttons immediately
+                try:
+                    self._search_filters = {}
+                except Exception:
+                    pass
+                try:
+                    self._clear_all_header_buttons()
+                except Exception:
+                    pass
+                # also update header buttons state
+                try:
+                    self._update_header_clear_buttons()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
+                # temporarily disable sorting so new data is shown in source order
+                self.apt_table.setSortingEnabled(False)
+                self._reset_sort_after_fetch = True
+            except Exception:
+                self._reset_sort_after_fetch = False
         except Exception:
             pass
 
@@ -2316,6 +2423,15 @@ class VWorldAdmCodeGUI(QWidget):
 
         def _on_progress(cur, total):
             try:
+                # record last worker progress so we can extend progress during table population
+                try:
+                    self._last_progress_value = int(cur)
+                except Exception:
+                    self._last_progress_value = 0
+                try:
+                    self._last_progress_total = int(total)
+                except Exception:
+                    self._last_progress_total = int(total) if total else 0
                 self.progress_bar.setValue(cur)
                 self.status_label.setText(f"진행: {cur}/{total}")
                 QApplication.processEvents()
@@ -2390,11 +2506,76 @@ class VWorldAdmCodeGUI(QWidget):
                 rows.sort(key=lambda r: _parse_date(r[3] if len(r) > 3 else ""))
                 self.apt_rows_master = rows
                 self.apt_filters = {}
-                # apply current 거래유형 체크박스 필터 when populating
                 try:
-                    self.apply_apt_filters()
+                    self._update_header_clear_buttons()
                 except Exception:
-                    self.populate_apt_table(rows)
+                    pass
+
+                # extend progress maximum by number of rows to reflect table population
+                try:
+                    prev_total = getattr(self, '_last_progress_total', 0) or 0
+                    prev_val = getattr(self, '_last_progress_value', 0) or 0
+                    new_total = prev_total + len(rows)
+                    if new_total <= 0:
+                        new_total = len(rows) or 1
+                    try:
+                        self.progress_bar.setMaximum(new_total)
+                    except Exception:
+                        pass
+                except Exception:
+                    prev_total = 0
+                    prev_val = 0
+                    new_total = len(rows) or 1
+
+                # callback used by populate_apt_table to advance progress
+                def _table_progress(done_rows):
+                    try:
+                        val = (prev_val or 0) + int(done_rows)
+                        if val > new_total:
+                            val = new_total
+                        try:
+                            self.progress_bar.setValue(val)
+                        except Exception:
+                            pass
+                        try:
+                            self.status_label.setText(f"진행: {val}/{new_total}")
+                        except Exception:
+                            pass
+                        QApplication.processEvents()
+                    except Exception:
+                        pass
+
+                # apply current 거래유형 체크박스 filter when populating, passing callback
+                try:
+                    self.apply_apt_filters(progress_callback=_table_progress)
+                except Exception:
+                    self.populate_apt_table(rows, progress_callback=_table_progress)
+                # If we requested a reset of sort state at fetch start, clear sort indicator
+                try:
+                    if getattr(self, '_reset_sort_after_fetch', False):
+                        try:
+                            hdr = self.apt_table.horizontalHeader()
+                            # attempt to clear any stored sort column/direction
+                            try:
+                                hdr.setSortIndicator(-1, Qt.AscendingOrder)
+                            except Exception:
+                                try:
+                                    hdr.setSortIndicatorShown(False)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            # re-enable sorting so user can sort manually, but previous sort criterion cleared
+                            self.apt_table.setSortingEnabled(True)
+                        except Exception:
+                            pass
+                        try:
+                            self._reset_sort_after_fetch = False
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
                 self.btn_apt_save.setEnabled(bool(rows))
                 self.status_label.setText(f"완료: {len(rows)}건")
                 try:
@@ -2607,28 +2788,280 @@ class VWorldAdmCodeGUI(QWidget):
         col = hdr.logicalIndexAt(pos)
         if col < 0:
             return
-        # toggle: if filter exists for this column, remove it; else ask for input
-        if col in self.apt_filters and self.apt_filters[col]:
-            # remove filter
-            try:
-                del self.apt_filters[col]
-            except Exception:
-                self.apt_filters.pop(col, None)
+
+        # Show a small menu: 기존 필터 입력/해제와 텍스트 검색+선택 기능 제공
+        menu = QMenu(self)
+        act_filter = menu.addAction("필터 입력/해제")
+        act_search_select = menu.addAction("텍스트 검색 및 선택...")
+        act = menu.exec_(hdr.mapToGlobal(pos))
+        if act is None:
+            return
+
+        if act is act_filter:
+            # 기존 동작: 필터가 있으면 해제, 없으면 간단한 텍스트 입력으로 필터 적용
+            if col in self.apt_filters and self.apt_filters[col]:
+                try:
+                    del self.apt_filters[col]
+                except Exception:
+                    self.apt_filters.pop(col, None)
+                self.apply_apt_filters()
+                try:
+                    self._update_header_clear_buttons()
+                except Exception:
+                    pass
+                self.status_label.setText(f"필터 해제: 열 {col}")
+                return
+
+            text, ok = QInputDialog.getText(self, "열 필터", f"열 {col} 필터 텍스트 입력:")
+            if not ok:
+                return
+            text = text.strip()
+            if not text:
+                return
+            self.apt_filters[col] = text
             self.apply_apt_filters()
-            self.status_label.setText(f"필터 해제: 열 {col}")
+            try:
+                self._update_header_clear_buttons()
+            except Exception:
+                pass
+            self.status_label.setText(f"필터 적용: 열 {col} -> '{text}'")
             return
 
-        text, ok = QInputDialog.getText(self, "열 필터", f"열 {col} 필터 텍스트 입력:")
-        if not ok:
-            return
-        text = text.strip()
-        if not text:
-            return
-        self.apt_filters[col] = text
-        self.apply_apt_filters()
-        self.status_label.setText(f"필터 적용: 열 {col} -> '{text}'")
+        if act is act_search_select:
+            # Prepare items based on currently 표시된(visible) 테이블 행들.
+            # Use mapping to apt_rows_master indices if available so selection maps to master rows.
+            items = []
+            used_master = set()
+            master = getattr(self, 'apt_rows_master', None) or []
+            for row in range(self.apt_table.rowCount()):
+                try:
+                    it = self.apt_table.item(row, col)
+                    txt = it.text() if it else ''
+                except Exception:
+                    txt = ''
+                master_idx = None
+                full_row = None
+                try:
+                    if hasattr(self, '_visible_to_master_indices') and row < len(self._visible_to_master_indices):
+                        master_idx = self._visible_to_master_indices[row]
+                    if master_idx is not None and master:
+                        full_row = master[master_idx]
+                    # if mapping not known, try to find a matching master row now (avoid incorrect fallback later)
+                    if master_idx is None and master:
+                        # build table row values
+                        try:
+                            tbl_vals = [self.apt_table.item(row, c).text() if self.apt_table.item(row, c) else '' for c in range(self.apt_table.columnCount())]
+                        except Exception:
+                            tbl_vals = None
+                        if tbl_vals is not None:
+                            for mi, mr in enumerate(master):
+                                if mi in used_master:
+                                    continue
+                                try:
+                                    mr_vals = [str(x) if x is not None else '' for x in (mr if isinstance(mr, (list, tuple)) else [mr])]
+                                    if mr_vals == tbl_vals:
+                                        master_idx = mi
+                                        full_row = mr
+                                        used_master.add(mi)
+                                        break
+                                except Exception:
+                                    continue
+                except Exception:
+                    master_idx = None
+                    full_row = None
+                # Use master_idx when available, else use the table row index as fallback
+                idx_for_item = master_idx if master_idx is not None else row
+                if full_row is None:
+                    # build a row list from current table cells
+                    try:
+                        full_row = [self.apt_table.item(row, c).text() if self.apt_table.item(row, c) else '' for c in range(self.apt_table.columnCount())]
+                    except Exception:
+                        full_row = None
+                items.append((txt, idx_for_item, full_row))
 
-    def apply_apt_filters(self):
+            dlg = ColumnSearchDialog(self, items, col, default_checked=True)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            sel = dlg.get_selected_indices()
+            if not sel:
+                self.status_label.setText("선택된 항목이 없습니다")
+                return
+
+            # Show only rows corresponding to the selected indices (hide others)
+            try:
+                base_rows = getattr(self, 'apt_rows_master', None)
+                if base_rows:
+                    filtered_rows = [base_rows[i] for i in sel if 0 <= i < len(base_rows)]
+                    self.populate_apt_table(filtered_rows)
+                    # mark search-based filter active so header X appears
+                    try:
+                        self._search_filters = getattr(self, '_search_filters', {}) or {}
+                        self._search_filters[col] = list(sel)
+                        self._search_filters = self._search_filters
+                    except Exception:
+                        pass
+                    try:
+                        self._update_header_clear_buttons()
+                    except Exception:
+                        pass
+                    # do not replace master; user can reapply 전체보기 by clearing filters or re-fetching
+                    self.status_label.setText(f"표시: {len(filtered_rows)}행 (열 {col} 값으로 필터)")
+                else:
+                    # fallback: build rows from current table items
+                    tmp = []
+                    for i in sel:
+                        try:
+                            rowvals = [self.apt_table.item(i, c).text() if self.apt_table.item(i, c) else '' for c in range(self.apt_table.columnCount())]
+                            tmp.append(rowvals)
+                        except Exception:
+                            continue
+                    self.populate_apt_table(tmp)
+                    try:
+                        self._search_filters = getattr(self, '_search_filters', {}) or {}
+                        self._search_filters[col] = list(sel)
+                    except Exception:
+                        pass
+                    try:
+                        self._update_header_clear_buttons()
+                    except Exception:
+                        pass
+                    self.status_label.setText(f"표시: {len(tmp)}행 (열 {col} 값으로 필터)")
+            except Exception:
+                pass
+            return
+
+    # --- Header clear-button helpers ---
+    def _ensure_header_button_handlers(self):
+        try:
+            if getattr(self, '_hdr_btns_connected', False):
+                return
+            hdr = self.apt_table.horizontalHeader()
+            try:
+                hdr.sectionResized.connect(lambda *_: self._position_header_buttons())
+            except Exception:
+                pass
+            try:
+                hdr.sectionMoved.connect(lambda *_: self._position_header_buttons())
+            except Exception:
+                pass
+            try:
+                self.apt_table.horizontalScrollBar().valueChanged.connect(lambda *_: self._position_header_buttons())
+            except Exception:
+                pass
+            self._hdr_btns_connected = True
+        except Exception:
+            pass
+
+    def _clear_all_header_buttons(self):
+        try:
+            btns = getattr(self, '_header_clear_buttons', {}) or {}
+            for c, b in list(btns.items()):
+                try:
+                    b.hide()
+                    b.deleteLater()
+                except Exception:
+                    pass
+            self._header_clear_buttons = {}
+        except Exception:
+            pass
+
+    def _update_header_clear_buttons(self):
+        try:
+            self._ensure_header_button_handlers()
+            hdr = self.apt_table.horizontalHeader()
+            btns = getattr(self, '_header_clear_buttons', {}) or {}
+            # remove buttons for columns no longer filtered
+            # consider both apt_filters and _search_filters as active filters
+            active_cols = set(getattr(self, 'apt_filters', {}).keys()) | set(getattr(self, '_search_filters', {}).keys())
+            for c in list(btns.keys()):
+                if c not in active_cols:
+                    try:
+                        btns[c].hide()
+                        btns[c].deleteLater()
+                    except Exception:
+                        pass
+                    btns.pop(c, None)
+            # create buttons for new filtered columns
+            for c in list(active_cols):
+                if c in btns:
+                    continue
+                try:
+                    b = QPushButton('✕', hdr)
+                    b.setToolTip('필터 해제')
+                    b.setFixedSize(18, 18)
+                    b.setStyleSheet('font-size:10px; padding:0;')
+                    b.clicked.connect(functools.partial(self._clear_filter, c))
+                    btns[c] = b
+                except Exception:
+                    continue
+            self._header_clear_buttons = btns
+            self._position_header_buttons()
+        except Exception:
+            pass
+
+    def _position_header_buttons(self):
+        try:
+            hdr = self.apt_table.horizontalHeader()
+            btns = getattr(self, '_header_clear_buttons', {}) or {}
+            if not btns:
+                return
+            for c, b in list(btns.items()):
+                try:
+                    if not b:
+                        continue
+                    # compute visual position and size
+                    x = hdr.sectionPosition(c)
+                    w = hdr.sectionSize(c)
+                    # place button near right edge of section
+                    bx = x + w - b.width() - 4 - self.apt_table.horizontalScrollBar().value()
+                    by = (hdr.height() - b.height()) // 2
+                    b.move(bx, by)
+                    b.show()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _clear_filter(self, col):
+        try:
+            cleared = False
+            if col in getattr(self, 'apt_filters', {}):
+                try:
+                    del self.apt_filters[col]
+                    cleared = True
+                except Exception:
+                    try:
+                        self.apt_filters.pop(col, None)
+                        cleared = True
+                    except Exception:
+                        cleared = False
+                # reapply filters
+                try:
+                    self.apply_apt_filters()
+                except Exception:
+                    pass
+            # also handle search-based filters
+            if col in getattr(self, '_search_filters', {}):
+                try:
+                    # remove search filter and restore full master rows
+                    self._search_filters.pop(col, None)
+                    try:
+                        self.populate_apt_table(self.apt_rows_master or [])
+                    except Exception:
+                        pass
+                    cleared = True
+                except Exception:
+                    pass
+            if cleared:
+                try:
+                    self._update_header_clear_buttons()
+                except Exception:
+                    pass
+                self.status_label.setText(f"필터 해제: 열 {col}")
+        except Exception:
+            pass
+
+    def apply_apt_filters(self, progress_callback=None):
         if not getattr(self, 'apt_rows_master', None):
             return
         if not self.apt_filters:
@@ -2702,7 +3135,11 @@ class VWorldAdmCodeGUI(QWidget):
         except Exception:
             pass
 
-        self.populate_apt_table(rows)
+        self.populate_apt_table(rows, progress_callback=progress_callback)
+        try:
+            self._update_header_clear_buttons()
+        except Exception:
+            pass
 
     def _months_between(self, from_ym, to_ym):
         """Return list of YYYYMM strings from from_ym to to_ym inclusive, ascending."""
@@ -2729,7 +3166,7 @@ class VWorldAdmCodeGUI(QWidget):
                 y += 1
         return months
 
-    def populate_apt_table(self, rows):
+    def populate_apt_table(self, rows, progress_callback=None):
         # disable sorting while populating to avoid race/ordering issues
         try:
             was_sorting = self.apt_table.isSortingEnabled()
@@ -2739,88 +3176,113 @@ class VWorldAdmCodeGUI(QWidget):
             self.apt_table.setSortingEnabled(False)
         except Exception:
             pass
+
         try:
             self.apt_table.clearContents()
         except Exception:
             pass
-        # Recreate table columns/headers based on actual rows content
+        try:
+            self.apt_table.setRowCount(0)
+        except Exception:
+            pass
+
+        # determine max columns based on rows
         try:
             max_cols = 0
             for r in rows:
-                try:
-                    if isinstance(r, (list, tuple)):
-                        max_cols = max(max_cols, len(r))
-                except Exception:
-                    continue
-            if max_cols <= 0:
-                max_cols = self.apt_table.columnCount() or 0
-            self.apt_table.setColumnCount(max_cols)
-            # Build header labels: prefer default headers where available, otherwise generic '열 N'
-            header_labels = []
-            for i in range(max_cols):
-                lbl = None
-                try:
-                    if hasattr(self, 'apt_default_headers') and i < len(self.apt_default_headers):
-                        lbl = self.apt_default_headers[i]
-                except Exception:
-                    lbl = None
-                if not lbl:
-                    lbl = f"열 {i+1}"
-                header_labels.append(lbl)
-            try:
-                self.apt_table.setHorizontalHeaderLabels(header_labels)
-            except Exception:
-                pass
+                if isinstance(r, (list, tuple)):
+                    max_cols = max(max_cols, len(r))
         except Exception:
-            # fallback: preserve existing columns
+            max_cols = self.apt_table.columnCount() or 0
+        if max_cols <= 0:
+            max_cols = self.apt_table.columnCount() or 0
+        try:
+            self.apt_table.setColumnCount(max_cols)
+        except Exception:
             pass
-        self.apt_table.setRowCount(len(rows))
-        # determine numeric columns indexes from header labels
+
+        # set header labels using defaults when available
+        header_labels = []
+        for i in range(max_cols):
+            lbl = None
+            try:
+                if hasattr(self, 'apt_default_headers') and i < len(self.apt_default_headers):
+                    lbl = self.apt_default_headers[i]
+            except Exception:
+                lbl = None
+            if not lbl:
+                lbl = f"열 {i+1}"
+            header_labels.append(lbl)
+        try:
+            self.apt_table.setHorizontalHeaderLabels(header_labels)
+        except Exception:
+            pass
+
+        # determine numeric columns (sale, rent)
         sale_col_index = None
         rent_col_index = None
         try:
             for i in range(self.apt_table.columnCount()):
-                try:
-                    hi = self.apt_table.horizontalHeaderItem(i)
-                    if not hi:
-                        continue
-                    t = hi.text() or ""
-                    if t == "거래금액(만원)":
-                        sale_col_index = i
-                    if t == "월세(만원)":
-                        rent_col_index = i
-                except Exception:
+                hi = self.apt_table.horizontalHeaderItem(i)
+                if not hi:
                     continue
+                t = hi.text() or ""
+                if t == "거래금액(만원)":
+                    sale_col_index = i
+                if t == "월세(만원)":
+                    rent_col_index = i
         except Exception:
-            sale_col_index = 4
-        for r, row in enumerate(rows):
-            for c, val in enumerate(row):
+            pass
+
+        # incremental population in chunks
+        chunk = 50
+        total_rows = len(rows)
+        r_idx = 0
+        for row in rows:
+            try:
+                cur_row = self.apt_table.rowCount()
                 try:
-                    txt = val if isinstance(val, str) else str(val)
+                    self.apt_table.insertRow(cur_row)
                 except Exception:
-                    txt = ""
-                # format 거래금액(만원) and 월세(만원) columns with thousand separators
-                if c == (sale_col_index if sale_col_index is not None else 4) or (rent_col_index is not None and c == rent_col_index):
-                    num_val = None
                     try:
-                        import re
-                        digits = re.sub(r"[^0-9]", "", txt)
-                        if digits:
-                            num_val = int(digits)
-                            txt = f"{num_val:,}"
+                        self.apt_table.setRowCount(cur_row + 1)
                     except Exception:
-                        num_val = None
+                        pass
+                for c in range(self.apt_table.columnCount()):
+                    txt = ""
                     try:
-                        if num_val is not None:
-                            it = NumericItem(txt)
-                            it.setData(Qt.UserRole, num_val)
+                        val = row[c] if (isinstance(row, (list, tuple)) and c < len(row)) else ""
+                        txt = val if isinstance(val, str) else str(val)
+                    except Exception:
+                        txt = ""
+                    try:
+                        if (sale_col_index is not None and c == sale_col_index) or (rent_col_index is not None and c == rent_col_index):
+                            import re
+                            digits = re.sub(r"[^0-9]", "", txt)
+                            num_val = int(digits) if digits else None
+                            if num_val is not None:
+                                it = NumericItem(f"{num_val:,}")
+                                it.setData(Qt.UserRole, num_val)
+                            else:
+                                it = QTableWidgetItem(txt)
                         else:
                             it = QTableWidgetItem(txt)
                     except Exception:
                         it = QTableWidgetItem(txt)
-                    self.apt_table.setItem(r, c, it)
-                else:
-                    self.apt_table.setItem(r, c, QTableWidgetItem(txt))
+                    try:
+                        self.apt_table.setItem(cur_row, c, it)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            r_idx += 1
+            if progress_callback and (r_idx % chunk == 0 or r_idx == total_rows):
+                try:
+                    progress_callback(r_idx)
+                    QApplication.processEvents()
+                except Exception:
+                    pass
+
         try:
             self.apt_table.setSortingEnabled(was_sorting)
         except Exception:
