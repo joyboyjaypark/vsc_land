@@ -20,6 +20,8 @@ import time
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.ticker import FuncFormatter
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import functools
 import traceback
 
@@ -249,9 +251,31 @@ class VWorldAdmCodeGUI(QWidget):
         self.btn_apt_fetch = QPushButton("아파트 조회")
         self.btn_apt_fetch.clicked.connect(self.on_apt_fetch)
 
+        self.btn_apt_chart = QPushButton("차트 생성")
+        self.btn_apt_chart.clicked.connect(self.on_apt_chart)
+        self.btn_apt_chart.setEnabled(False)
+
+        self.combo_chart_type = QComboBox()
+        self.combo_chart_type.addItems(["기본(혼합)", "서브플롯(4)"])
+        try:
+            self.combo_chart_type.setMaxVisibleItems(8)
+        except Exception:
+            pass
+        self.combo_chart_type.setCurrentIndex(0)
+        self.combo_chart_type.setEnabled(False)
+
         self.btn_apt_save = QPushButton("CSV로 저장")
         self.btn_apt_save.clicked.connect(self.on_apt_save_csv)
         self.btn_apt_save.setEnabled(False)
+        try:
+            self.btn_apt_chart.setEnabled(False)
+            try:
+                self.combo_chart_type.setEnabled(False)
+            except Exception:
+                pass
+            self.combo_chart_type.setEnabled(False)
+        except Exception:
+            pass
 
         self.btn_apt_cancel = QPushButton("취소")
         self.btn_apt_cancel.clicked.connect(self.on_apt_cancel)
@@ -332,13 +356,15 @@ class VWorldAdmCodeGUI(QWidget):
 
         # 버튼/진행률/표를 왼쪽 영역으로 이동하여 빈칸을 채움
         layout.addWidget(self.btn_apt_fetch, 3, 0)
-        layout.addWidget(self.btn_apt_save, 3, 1)
-        layout.addWidget(self.btn_apt_cancel, 3, 2)
-        # 테이블을 왼쪽 영역에 확장 (왼쪽 3열을 채움)
-        layout.addWidget(self.apt_table, 4, 0, 1, 3)
+        layout.addWidget(self.btn_apt_chart, 3, 1)
+        layout.addWidget(self.combo_chart_type, 3, 2)
+        layout.addWidget(self.btn_apt_save, 3, 3)
+        layout.addWidget(self.btn_apt_cancel, 3, 4)
+        # 테이블을 왼쪽 영역에 확장 (왼쪽 4열을 채움)
+        layout.addWidget(self.apt_table, 4, 0, 1, 5)
         # 상태 표시줄: 왼쪽 텍스트 + 진행바(오른쪽으로 확장)
         layout.addWidget(self.status_label, 5, 0)
-        layout.addWidget(self.progress_bar, 5, 1, 1, 2)
+        layout.addWidget(self.progress_bar, 5, 1, 1, 4)
 
         # Put existing real-estate layout into first tab and add an economic-indicators tab
         self.tabs = QTabWidget()
@@ -2356,6 +2382,10 @@ class VWorldAdmCodeGUI(QWidget):
             except Exception:
                 pass
             self.btn_apt_save.setEnabled(False)
+            try:
+                self.btn_apt_chart.setEnabled(False)
+            except Exception:
+                pass
             if hasattr(self, 'edit_apt_url'):
                 self.edit_apt_url.setText("")
             try:
@@ -2401,6 +2431,10 @@ class VWorldAdmCodeGUI(QWidget):
             pass
         self.btn_apt_fetch.setEnabled(False)
         self.btn_apt_save.setEnabled(False)
+        try:
+            self.btn_apt_chart.setEnabled(False)
+        except Exception:
+            pass
 
         # Run data fetching in a worker thread to avoid blocking the UI
         try:
@@ -2577,6 +2611,11 @@ class VWorldAdmCodeGUI(QWidget):
                 except Exception:
                     pass
                 self.btn_apt_save.setEnabled(bool(rows))
+                try:
+                    self.btn_apt_chart.setEnabled(bool(rows))
+                    self.combo_chart_type.setEnabled(bool(rows))
+                except Exception:
+                    pass
                 self.status_label.setText(f"완료: {len(rows)}건")
                 try:
                     # set progress to full (maximum may be months * LAWD count)
@@ -2596,6 +2635,10 @@ class VWorldAdmCodeGUI(QWidget):
             try:
                 self.btn_apt_fetch.setEnabled(True)
                 self.btn_apt_save.setEnabled(False)
+                try:
+                    self.btn_apt_chart.setEnabled(False)
+                except Exception:
+                    pass
                 self.btn_apt_cancel.setEnabled(False)
             except Exception:
                 pass
@@ -3309,6 +3352,669 @@ class VWorldAdmCodeGUI(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "저장 실패", str(e))
 
+    def on_apt_chart(self):
+        # Simple chart: plot 거래금액(만원) over 계약일 for visible rows
+        try:
+            try:
+                plt.close('all')
+            except Exception:
+                pass
+            # find column indices
+            date_col = None
+            price_col = None
+            for i in range(self.apt_table.columnCount()):
+                hi = self.apt_table.horizontalHeaderItem(i)
+                if not hi:
+                    continue
+                t = (hi.text() or "").strip()
+                if t == "계약일":
+                    date_col = i
+                if t == "거래금액(만원)":
+                    price_col = i
+            if date_col is None or price_col is None:
+                QMessageBox.information(self, "차트 생성", "계약일 또는 거래금액 열이 없습니다.")
+                return
+            dates = []
+            prices = []
+            for r in range(self.apt_table.rowCount()):
+                try:
+                    di = self.apt_table.item(r, date_col)
+                    pi = self.apt_table.item(r, price_col)
+                    if di is None or pi is None:
+                        continue
+                    ds = di.text().strip()
+                    ps = pi.text().strip()
+                    if not ds or not ps:
+                        continue
+                    # parse price (remove commas, non-digits)
+                    import re
+                    digits = re.sub(r"[^0-9]", "", ps)
+                    # treat parsing failure as 0 per user request
+                    price = int(digits) if digits else 0
+                    # parse date (try common formats)
+                    from datetime import datetime
+                    parsed = None
+                    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"):
+                        try:
+                            parsed = datetime.strptime(ds, fmt)
+                            break
+                        except Exception:
+                            continue
+                    if parsed is None:
+                        continue
+                    dates.append(parsed)
+                    prices.append(price)
+                except Exception:
+                    continue
+            if not dates:
+                QMessageBox.information(self, "차트 생성", "차트에 그릴 데이터가 없습니다.")
+                return
+            # aggregation by year-month
+            from collections import defaultdict
+            agg = defaultdict(lambda: { 'buy_count':0, 'rent_count':0, 'buy_sum':0, 'rent_sum':0 })
+            for d,p,rtype in zip(dates, prices, [None]*len(dates)):
+                # we didn't store types; re-extract from table per-date is cumbersome,
+                # so instead rebuild from table rows to include type info accurately.
+                pass
+            # Rebuild aggregation from table to include type
+            agg = defaultdict(lambda: { 'buy_count':0, 'rent_count':0, 'buy_sum':0, 'rent_sum':0 })
+            # determine 거래유형 column once (avoid per-row scanning)
+            type_col = None
+            try:
+                for i in range(self.apt_table.columnCount()):
+                    hi = self.apt_table.horizontalHeaderItem(i)
+                    if hi and (hi.text() or "").strip() == '거래유형':
+                        type_col = i
+                        break
+            except Exception:
+                type_col = None
+
+            # use a broader set of rent keywords (match apply_apt_filters logic)
+            rent_keywords = ["전세", "월세", "전월세", "jeonse", "rent", "임대"]
+
+            # collect a small sample of rows for debug to inspect classification
+            sample_rows = []
+
+            for r in range(self.apt_table.rowCount()):
+                try:
+                    di = self.apt_table.item(r, date_col)
+                    pi = self.apt_table.item(r, price_col)
+                    if di is None or pi is None:
+                        continue
+                    ds = (di.text() or "").strip()
+                    ps = (pi.text() or "").strip()
+                    if not ds:
+                        continue
+                    from datetime import datetime
+                    parsed = None
+                    for fmt in ("%Y-%m-%d", "%Y.%m.%d", "%Y/%m/%d", "%Y%m%d"):
+                        try:
+                            parsed = datetime.strptime(ds, fmt)
+                            break
+                        except Exception:
+                            continue
+                    if parsed is None:
+                        continue
+                    ym = parsed.strftime('%Y-%m')
+                    import re
+                    digits = re.sub(r"[^0-9]", "", ps)
+                    price = int(digits) if digits else 0
+
+                    # extract type text from the pre-determined column
+                    ttext = ''
+                    try:
+                        if type_col is not None:
+                            ti_item = self.apt_table.item(r, type_col)
+                            ttext = (ti_item.text() or "") if ti_item is not None else ''
+                    except Exception:
+                        ttext = ''
+                    tnorm = (ttext or "").lower()
+                    is_rent = False
+                    try:
+                        for kw in rent_keywords:
+                            if kw in tnorm:
+                                is_rent = True
+                                break
+                    except Exception:
+                        is_rent = False
+
+                    if is_rent:
+                        agg[ym]['rent_count'] += 1
+                        agg[ym]['rent_sum'] += price
+                    else:
+                        agg[ym]['buy_count'] += 1
+                        agg[ym]['buy_sum'] += price
+
+                    # record a few sample rows for debug output
+                    if len(sample_rows) < 200:
+                        sample_rows.append((r, ym, ttext, price, ds))
+                except Exception:
+                    continue
+
+            # prepare sorted x-axis
+            keys = sorted(agg.keys())
+            buy_counts = [agg[k]['buy_count'] for k in keys]
+            rent_counts = [agg[k]['rent_count'] for k in keys]
+            buy_sums = [agg[k]['buy_sum'] for k in keys]
+            rent_sums = [agg[k]['rent_sum'] for k in keys]
+            # convert totals from 만원 단위 to 억원 단위 (1억원 = 10000만원)
+            buy_sums_y = [round(v / 10000.0, 2) for v in buy_sums]
+            rent_sums_y = [round(v / 10000.0, 2) for v in rent_sums]
+
+            # Debug: write aggregation summary to debug_logs for inspection
+            try:
+                logs_dir = os.path.join(os.getcwd(), "debug_logs")
+                os.makedirs(logs_dir, exist_ok=True)
+                ts = int(time.time())
+                dbgfile = os.path.join(logs_dir, f"apt_chart_debug_{ts}.txt")
+                with open(dbgfile, 'w', encoding='utf-8') as fw:
+                    fw.write('keys:\n')
+                    for k in keys:
+                        fw.write(f"{k}\n")
+                    fw.write('\nbuy_counts:\n')
+                    fw.write(','.join(str(x) for x in buy_counts) + '\n')
+                    fw.write('\nrent_counts:\n')
+                    fw.write(','.join(str(x) for x in rent_counts) + '\n')
+                    fw.write('\nbuy_sums_y (억원):\n')
+                    fw.write(','.join(str(x) for x in buy_sums_y) + '\n')
+                    fw.write('\nrent_sums_y (억원):\n')
+                    fw.write(','.join(str(x) for x in rent_sums_y) + '\n')
+                    fw.write('\n# sample classified rows (row_index, ym, 거래유형_text, price(만원), date)\n')
+                    try:
+                        for tup in sample_rows:
+                            fw.write(','.join(str(x) for x in tup) + '\n')
+                    except Exception:
+                        pass
+                    try:
+                        total_rows = self.apt_table.rowCount()
+                        fw.write('\n# table_row_count=%d\n' % total_rows)
+                        fw.write('# total_rows_counted=%d\n' % (sum(buy_counts) + sum(rent_counts)))
+                    except Exception:
+                        pass
+                try:
+                    self.status_label.setText(f"차트 데이터: months={len(keys)}, rent_max={max(rent_counts) if rent_counts else 0}")
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Ensure matplotlib uses a font that supports Korean to avoid garbled text
+            try:
+                import matplotlib
+                # Prefer common Windows Korean font, fallback to system defaults
+                try:
+                    matplotlib.rcParams['font.family'] = 'Malgun Gothic'
+                except Exception:
+                    try:
+                        matplotlib.rcParams['font.family'] = '맑은 고딕'
+                    except Exception:
+                        pass
+                try:
+                    matplotlib.rcParams['axes.unicode_minus'] = False
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            ctype = self.combo_chart_type.currentText() if hasattr(self, 'combo_chart_type') else '기본(혼합)'
+            try:
+                if ctype == '서브플롯(4)':
+                    fig, axes = plt.subplots(2,2, figsize=(12,8))
+                    x = list(range(len(keys)))
+                    # bars
+                    bars_rent = axes[0,0].bar(x, rent_counts, color='orange', label='전월세 거래량')
+                    axes[0,0].set_title('월별 전월세 거래량')
+                    bars_buy = axes[0,1].bar(x, buy_counts, color='blue', label='매매 거래량')
+                    axes[0,1].set_title('월별 매매 거래량')
+                    # lines (sums in 억원)
+                    line_buy, = axes[1,0].plot(x, buy_sums_y, marker='o', label='매매 총액(억원)')
+                    axes[1,0].set_title('월별 매매 총액')
+                    line_rent, = axes[1,1].plot(x, rent_sums_y, marker='o', color='orange', label='전월세 총액(억원)')
+                    axes[1,1].set_title('월별 전월세 총액')
+                    # set x ticks
+                    for ax in axes.flatten():
+                        ax.set_xticks(x)
+                        ax.set_xticklabels(keys)
+                        ax.tick_params(axis='x', rotation=45)
+                    plt.tight_layout()
+
+                    # build artist info for tooltip
+                    artists_info = []
+                    for i, bar in enumerate(bars_rent):
+                        bar._series = '전월세 거래량'
+                        bar._x_label = keys[i]
+                        bar._y_value = rent_counts[i]
+                        artists_info.append({'artist': bar, 'type': 'bar', 'series': bar._series, 'x': keys[i], 'y': rent_counts[i]})
+                    for i, bar in enumerate(bars_buy):
+                        bar._series = '매매 거래량'
+                        bar._x_label = keys[i]
+                        bar._y_value = buy_counts[i]
+                        artists_info.append({'artist': bar, 'type': 'bar', 'series': bar._series, 'x': keys[i], 'y': buy_counts[i]})
+                    # lines: add points
+                    for i, xv in enumerate(x):
+                        artists_info.append({'artist': line_buy, 'type': 'line', 'series': '매매 총액(억원)', 'x': keys[i], 'xpos': xv, 'y': buy_sums_y[i]})
+                        artists_info.append({'artist': line_rent, 'type': 'line', 'series': '전월세 총액(억원)', 'x': keys[i], 'xpos': xv, 'y': rent_sums_y[i]})
+
+                    # per-axis annotations and guide lines for tooltip
+                    annotators = {}
+                    # per-axes guide lines for tooltip (data coord line connecting point->tooltip)
+                    line_guides = {}
+
+                    def on_move(event):
+                        if event.inaxes is None:
+                            try:
+                                for a in annotators.values():
+                                    try:
+                                        if a is not None:
+                                            a.set_visible(False)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            try:
+                                for lg in line_guides.values():
+                                    if lg is not None:
+                                        lg.set_visible(False)
+                            except Exception:
+                                pass
+                            try:
+                                fig.canvas.draw_idle()
+                            except Exception:
+                                pass
+                            return
+                        # prefer line points over bars when both are near
+                        try:
+                            # check lines first
+                            for info in artists_info:
+                                if info['type'] == 'line':
+                                    ax = event.inaxes
+                                    trans = ax.transData
+                                    px = event.x
+                                    py = event.y
+                                    # transform data point to pixel coords
+                                    xpix, ypix = ax.transData.transform((info['xpos'], info['y']))
+                                    dist = ((xpix - px)**2 + (ypix - py)**2)**0.5
+                                    if dist < 8:
+                                        # use per-axis annotator, anchor to data point with offset
+                                        ax_line = event.inaxes
+                                        annot = annotators.get(ax_line)
+                                        if annot is None:
+                                            try:
+                                                annot = ax_line.annotate('', xy=(0,0), xytext=(15,15), textcoords='offset points', bbox=dict(boxstyle='round', fc='w'), zorder=10)
+                                            except Exception:
+                                                annot = None
+                                            annotators[ax_line] = annot
+                                        # format y value
+                                        yval = info['y']
+                                        if '억원' in info['series']:
+                                            text = f"{info['series']}\n{info['x']}\n{yval:.2f}"
+                                        else:
+                                            text = f"{info['series']}\n{info['x']}\n{yval}"
+                                        if annot is not None:
+                                            try:
+                                                annot.xy = (info['xpos'], info['y'])
+                                                annot.set_text(text)
+                                            except Exception:
+                                                try:
+                                                    annot.set_text(text)
+                                                except Exception:
+                                                    pass
+                                        # draw guide line from data point to tooltip
+                                        try:
+                                            ax = event.inaxes
+                                            # data point coords
+                                            dx = info['xpos']
+                                            dy = info['y']
+                                            # tooltip pixel coords
+                                            tp_x, tp_y = (event.x + 15, event.y + 15)
+                                            # convert tooltip pixel to data coords
+                                            try:
+                                                tx, ty = ax.transData.inverted().transform((tp_x, tp_y))
+                                            except Exception:
+                                                tx, ty = dx, dy
+                                            lg = line_guides.get(ax)
+                                            if lg is None:
+                                                try:
+                                                    lg = ax.plot([], [], color='gray', linestyle='--', linewidth=0.8, zorder=2)[0]
+                                                except Exception:
+                                                    lg = None
+                                                line_guides[ax] = lg
+                                            if lg is not None:
+                                                try:
+                                                    lg.set_data([dx, tx], [dy, ty])
+                                                    lg.set_visible(True)
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                        if annot is not None:
+                                            try:
+                                                annot.set_visible(True)
+                                            except Exception:
+                                                pass
+                                        fig.canvas.draw_idle()
+                                        return
+                        except Exception:
+                            pass
+                        try:
+                            # then check bars
+                            for info in artists_info:
+                                if info['type'] == 'bar':
+                                    bar = info['artist']
+                                    contains, _ = bar.contains(event)
+                                    if contains:
+                                        # use per-axis annotator anchored to bar center
+                                        ax_bar = event.inaxes
+                                        annot = annotators.get(ax_bar)
+                                        if annot is None:
+                                            try:
+                                                annot = ax_bar.annotate('', xy=(0,0), xytext=(15,15), textcoords='offset points', bbox=dict(boxstyle='round', fc='w'), zorder=10)
+                                            except Exception:
+                                                annot = None
+                                            annotators[ax_bar] = annot
+                                        # format y value
+                                        yval = info['y']
+                                        text = f"{info['series']}\n{info['x']}\n{yval}"
+                                        if annot is not None:
+                                            try:
+                                                bx = bar.get_x() + bar.get_width()/2.0
+                                                by = bar.get_height()
+                                                annot.xy = (bx, by)
+                                                annot.set_text(text)
+                                            except Exception:
+                                                try:
+                                                    annot.set_text(text)
+                                                except Exception:
+                                                    pass
+                                        try:
+                                            ax = event.inaxes
+                                            # data point coords from bar center
+                                            bx = bar.get_x() + bar.get_width()/2.0
+                                            by = bar.get_height()
+                                            tp_x, tp_y = (event.x + 15, event.y + 15)
+                                            try:
+                                                tx, ty = ax.transData.inverted().transform((tp_x, tp_y))
+                                            except Exception:
+                                                tx, ty = bx, by
+                                            lg = line_guides.get(ax)
+                                            if lg is None:
+                                                try:
+                                                    lg = ax.plot([], [], color='gray', linestyle='--', linewidth=0.8, zorder=2)[0]
+                                                except Exception:
+                                                    lg = None
+                                                line_guides[ax] = lg
+                                            if lg is not None:
+                                                try:
+                                                    lg.set_data([bx, tx], [by, ty])
+                                                    lg.set_visible(True)
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                        annot.set_visible(True)
+                                        fig.canvas.draw_idle()
+                                        return
+                        except Exception:
+                            pass
+                        # hide all annotators and guide lines
+                        try:
+                            for a in annotators.values():
+                                try:
+                                    if a is not None:
+                                        a.set_visible(False)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            for lg in line_guides.values():
+                                if lg is not None:
+                                    lg.set_visible(False)
+                        except Exception:
+                            pass
+                        try:
+                            fig.canvas.draw_idle()
+                        except Exception:
+                            pass
+
+                    fig.canvas.mpl_connect('motion_notify_event', on_move)
+                    try:
+                        from PyQt5.QtWidgets import QDialog, QVBoxLayout
+                        dlg = QDialog(self)
+                        dlg.setWindowTitle(f"차트: {ctype}")
+                        # enable minimize/maximize buttons on the dialog
+                        try:
+                            dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowMinMaxButtonsHint)
+                        except Exception:
+                            pass
+                        lay = QVBoxLayout(dlg)
+                        try:
+                            canvas = FigureCanvas(fig)
+                            # optional toolbar
+                            try:
+                                tb = NavigationToolbar(canvas, dlg)
+                                lay.addWidget(tb)
+                            except Exception:
+                                pass
+                            lay.addWidget(canvas)
+                            dlg.resize(1000, 700)
+                            dlg.exec_()
+                        except Exception:
+                            plt.show()
+                    except Exception:
+                        plt.show()
+                else:
+                    fig, ax1 = plt.subplots(figsize=(12,6))
+                    x = list(range(len(keys)))
+                    bars_rent = ax1.bar(x, rent_counts, label='전월세 거래량', color='orange', alpha=0.6)
+                    bars_buy = ax1.bar(x, buy_counts, label='매매 거래량', color='blue', alpha=0.6, bottom=rent_counts)
+                    ax1.set_xlabel('연-월')
+                    ax1.set_ylabel('거래량')
+                    ax2 = ax1.twinx()
+                    line_buy, = ax2.plot(x, buy_sums_y, label='매매 총액(억원)', color='navy', marker='o')
+                    line_rent, = ax2.plot(x, rent_sums_y, label='전월세 총액(억원)', color='darkorange', marker='o')
+                    ax2.set_ylabel('총액(억원)')
+                    ax1.set_xticks(x)
+                    ax1.set_xticklabels(keys)
+                    ax1.tick_params(axis='x', rotation=45)
+                    lines1, labels1 = ax1.get_legend_handles_labels()
+                    lines2, labels2 = ax2.get_legend_handles_labels()
+                    ax1.legend(lines1+lines2, labels1+labels2, loc='upper left')
+                    plt.title('월별 거래량 및 총액')
+                    plt.tight_layout()
+
+                    # build artist info
+                    artists_info = []
+                    for i, bar in enumerate(bars_rent):
+                        bar._series = '전월세 거래량'
+                        bar._x_label = keys[i]
+                        bar._y_value = rent_counts[i]
+                        artists_info.append({'artist': bar, 'type': 'bar', 'series': bar._series, 'x': keys[i], 'y': rent_counts[i]})
+                    for i, bar in enumerate(bars_buy):
+                        bar._series = '매매 거래량'
+                        bar._x_label = keys[i]
+                        bar._y_value = buy_counts[i]
+                        artists_info.append({'artist': bar, 'type': 'bar', 'series': bar._series, 'x': keys[i], 'y': buy_counts[i]})
+                    for i, xv in enumerate(x):
+                        artists_info.append({'artist': line_buy, 'type': 'line', 'series': '매매 총액(억원)', 'x': keys[i], 'xpos': xv, 'y': buy_sums_y[i]})
+                        artists_info.append({'artist': line_rent, 'type': 'line', 'series': '전월세 총액(억원)', 'x': keys[i], 'xpos': xv, 'y': rent_sums_y[i]})
+
+                    # use per-axis annotators and guide lines; close prior figures to avoid duplicates
+                    try:
+                        plt.close('all')
+                    except Exception:
+                        pass
+                    annotators = {}
+                    line_guides = {}
+
+                    def on_move(event):
+                        # hide when outside axes
+                        if event.inaxes is None:
+                            try:
+                                for a in annotators.values():
+                                    try:
+                                        if a is not None:
+                                            a.set_visible(False)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                            try:
+                                for lg in line_guides.values():
+                                    if lg is not None:
+                                        lg.set_visible(False)
+                            except Exception:
+                                pass
+                            try:
+                                fig.canvas.draw_idle()
+                            except Exception:
+                                pass
+                            return
+
+                        # prefer line point proximity over bars
+                        try:
+                            for info in artists_info:
+                                if info['type'] == 'line':
+                                    art = info['artist']
+                                    ax_used = getattr(art, 'axes', event.inaxes)
+                                    try:
+                                        xpix, ypix = ax_used.transData.transform((info['xpos'], info['y']))
+                                    except Exception:
+                                        continue
+                                    px = event.x; py = event.y
+                                    dist = ((xpix - px)**2 + (ypix - py)**2)**0.5
+                                    if dist < 8:
+                                        annot = annotators.get(ax_used)
+                                        if annot is None:
+                                            try:
+                                                annot = ax_used.annotate('', xy=(0,0), xytext=(15,15), textcoords='offset points', bbox=dict(boxstyle='round', fc='w'), zorder=10)
+                                            except Exception:
+                                                annot = None
+                                            annotators[ax_used] = annot
+                                        yval = info['y']
+                                        if '억원' in info['series']:
+                                            text = f"{info['series']}\n{info['x']}\n{yval:.2f}"
+                                        else:
+                                            text = f"{info['series']}\n{info['x']}\n{yval}"
+                                        if annot is not None:
+                                            try:
+                                                annot.xy = (info['xpos'], info['y'])
+                                                annot.set_text(text)
+                                                annot.set_visible(True)
+                                            except Exception:
+                                                pass
+                                        try:
+                                            tp_x, tp_y = (event.x + 15, event.y + 15)
+                                            try:
+                                                tx, ty = ax_used.transData.inverted().transform((tp_x, tp_y))
+                                            except Exception:
+                                                tx, ty = info['xpos'], info['y']
+                                            lg = line_guides.get(ax_used)
+                                            if lg is None:
+                                                try:
+                                                    lg = ax_used.plot([], [], color='gray', linestyle='--', linewidth=0.8, zorder=2)[0]
+                                                except Exception:
+                                                    lg = None
+                                                line_guides[ax_used] = lg
+                                            if lg is not None:
+                                                try:
+                                                    lg.set_data([info['xpos'], tx], [info['y'], ty])
+                                                    lg.set_visible(True)
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                        try:
+                                            fig.canvas.draw_idle()
+                                        except Exception:
+                                            pass
+                                        return
+                        except Exception:
+                            pass
+
+                        try:
+                            for info in artists_info:
+                                if info['type'] == 'bar':
+                                    bar = info['artist']
+                                    contains, _ = bar.contains(event)
+                                    if contains:
+                                        ax_bar = bar.axes
+                                        annot = annotators.get(ax_bar)
+                                        if annot is None:
+                                            try:
+                                                annot = ax_bar.annotate('', xy=(0,0), xytext=(15,15), textcoords='offset points', bbox=dict(boxstyle='round', fc='w'), zorder=10)
+                                            except Exception:
+                                                annot = None
+                                            annotators[ax_bar] = annot
+                                        yval = info['y']
+                                        text = f"{info['series']}\n{info['x']}\n{yval}"
+                                        if annot is not None:
+                                            try:
+                                                bx = bar.get_x() + bar.get_width()/2.0
+                                                by = bar.get_height()
+                                                annot.xy = (bx, by)
+                                                annot.set_text(text)
+                                                annot.set_visible(True)
+                                            except Exception:
+                                                pass
+                                        try:
+                                            tp_x, tp_y = (event.x + 15, event.y + 15)
+                                            try:
+                                                tx, ty = ax_bar.transData.inverted().transform((tp_x, tp_y))
+                                            except Exception:
+                                                tx, ty = bx, by
+                                            lg = line_guides.get(ax_bar)
+                                            if lg is None:
+                                                try:
+                                                    lg = ax_bar.plot([], [], color='gray', linestyle='--', linewidth=0.8, zorder=2)[0]
+                                                except Exception:
+                                                    lg = None
+                                                line_guides[ax_bar] = lg
+                                            if lg is not None:
+                                                try:
+                                                    lg.set_data([bx, tx], [by, ty])
+                                                    lg.set_visible(True)
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                        try:
+                                            fig.canvas.draw_idle()
+                                        except Exception:
+                                            pass
+                                        return
+                        except Exception:
+                            pass
+                    fig.canvas.mpl_connect('motion_notify_event', on_move)
+                    try:
+                        from PyQt5.QtWidgets import QDialog, QVBoxLayout
+                        dlg = QDialog(self)
+                        dlg.setWindowTitle(f"차트: {ctype}")
+                        # enable minimize/maximize buttons on the dialog
+                        try:
+                            dlg.setWindowFlags(dlg.windowFlags() | Qt.WindowMinMaxButtonsHint)
+                        except Exception:
+                            pass
+                        lay = QVBoxLayout(dlg)
+                        try:
+                            canvas = FigureCanvas(fig)
+                            try:
+                                tb = NavigationToolbar(canvas, dlg)
+                                lay.addWidget(tb)
+                            except Exception:
+                                pass
+                            lay.addWidget(canvas)
+                            dlg.resize(1000, 700)
+                            dlg.exec_()
+                        except Exception:
+                            plt.show()
+                    except Exception:
+                        plt.show()
+            except Exception as e:
+                QMessageBox.critical(self, "차트 생성 실패", str(e))
+        except Exception as e:
+            QMessageBox.critical(self, "차트 생성 오류", str(e))
+
     def closeEvent(self, event):
         # Ensure any running worker is asked to stop and waited on before closing
         try:
@@ -3701,140 +4407,160 @@ class AptFetchWorker(QThread):
                     self.error.emit('취소됨')
                     return
                 url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTrade/getRTMSDataSvcAptTrade"
-                params = {
-                    "serviceKey": requests.utils.unquote(self.service_key),
-                    "LAWD_CD": lawd,
-                    "DEAL_YMD": ym,
-                    "pageNo": "1",
-                    "numOfRows": "1000",
-                }
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
                     "Accept": "application/xml, text/xml, */*;q=0.01",
                 }
-                try:
-                    resp = requests.get(url, params=params, timeout=30, headers=headers)
-                    resp.raise_for_status()
-                except Exception as e:
-                    self.error.emit(str(e))
-                    return
-                if getattr(self, '_stop', False):
-                    self.error.emit('취소됨')
-                    return
-                # save raw response
-                try:
-                    ts = int(time.time())
-                    fname = os.path.join(logs_dir, f"debug_response_{lawd}_{ym}_{ts}.xml")
-                    with open(fname, "wb") as fw:
-                        fw.write(resp.content)
-                    meta = os.path.join(logs_dir, f"debug_response_{lawd}_{ym}_{ts}.meta.txt")
-                    with open(meta, "w", encoding='utf-8') as fm:
-                        fm.write(f"url: {resp.url}\nstatus: {resp.status_code}\nheaders: {dict(resp.headers)}\n")
-                except Exception:
-                    pass
-
-                try:
-                    root = ET.fromstring(resp.content)
-                except Exception as e:
-                    self.error.emit(f"XML parse error ({ym}): {e}")
-                    return
-
-                items = root.findall("body/items/item")
-                for it in items:
-                    trade_date = f"{it.findtext('dealYear') or ''}-{it.findtext('dealMonth') or ''}-{it.findtext('dealDay') or ''}"
-                    raw_amount = it.findtext("dealAmount") or ""
-                    amount_norm = _norm_amount(raw_amount)
-                    rgst_raw = it.findtext("rgstDate") or _find_text(it, ["registDay", "등기일자", "registrationDate", "rgstDate"])
-                    rgst_norm = _norm_rgst(rgst_raw)
-                    row = [
-                        it.findtext("aptNm") or "",
-                        it.findtext("aptDong") or _find_text(it, ["aptDong", "단지동", "동", "apt_dong"]),
-                        it.findtext("excluUseAr") or "",
-                        trade_date,
-                        amount_norm,
-                        it.findtext("floor") or "",
-                        it.findtext("buildYear") or "",
-                        it.findtext("umdNm") or "",
-                        it.findtext("jibun") or "",
-                        it.findtext("sggCd") or "",
-                        (it.findtext("dealingGbn") or _find_text(it, ["tradeType", "거래유형", "dealType", "dealingGbn"])),
-                        (it.findtext("estateAgentSggNm") or _find_text(it, ["bcnstAddr", "brokerAddr", "중개사소재지", "bcnstc", "estateAgentSggNm"])),
-                        rgst_norm,
-                        (it.findtext("slerGbn") or _find_text(it, ["seller", "거래주체정보_매도자", "매도자", "tradePartSeller", "slerGbn"])),
-                        _find_text(it, ["buyer", "거래주체정보_매수자", "매수자", "tradePartBuyer"]),
-                        _find_text(it, ["rentYn", "토지임대부", "landLease", "isLandLeaseApt"]),
-                    ]
-                    # pad trade rows with empty rent-related columns to keep column alignment
-                    # insert empty 월세 column at position 5, and pad remaining 5 rent-related columns at end
+                # paginate trade results (API returns up to 1000 rows per page)
+                page = 1
+                while True:
+                    if getattr(self, '_stop', False):
+                        self.error.emit('취소됨')
+                        return
+                    params = {
+                        "serviceKey": requests.utils.unquote(self.service_key),
+                        "LAWD_CD": lawd,
+                        "DEAL_YMD": ym,
+                        "pageNo": str(page),
+                        "numOfRows": "1000",
+                    }
                     try:
-                        row.insert(5, "")
+                        resp = requests.get(url, params=params, timeout=30, headers=headers)
+                        resp.raise_for_status()
+                    except Exception as e:
+                        self.error.emit(str(e))
+                        return
+                    # save raw response (per-page)
+                    try:
+                        ts = int(time.time())
+                        fname = os.path.join(logs_dir, f"debug_response_{lawd}_{ym}_p{page}_{ts}.xml")
+                        with open(fname, "wb") as fw:
+                            fw.write(resp.content)
+                        meta = os.path.join(logs_dir, f"debug_response_{lawd}_{ym}_p{page}_{ts}.meta.txt")
+                        with open(meta, "w", encoding='utf-8') as fm:
+                            fm.write(f"url: {resp.url}\nstatus: {resp.status_code}\nheaders: {dict(resp.headers)}\n")
                     except Exception:
                         pass
-                    row.extend(["", "", "", "", ""])  # 계약기간, ContractType, 갱신권사용, 종전보증금, 종전월세
-                    rows.append(row)
+                    try:
+                        root = ET.fromstring(resp.content)
+                    except Exception as e:
+                        self.error.emit(f"XML parse error ({ym} p{page}): {e}")
+                        return
+                    items = root.findall("body/items/item")
+                    if not items:
+                        break
+                    for it in items:
+                        trade_date = f"{it.findtext('dealYear') or ''}-{it.findtext('dealMonth') or ''}-{it.findtext('dealDay') or ''}"
+                        raw_amount = it.findtext("dealAmount") or ""
+                        amount_norm = _norm_amount(raw_amount)
+                        rgst_raw = it.findtext("rgstDate") or _find_text(it, ["registDay", "등기일자", "registrationDate", "rgstDate"])
+                        rgst_norm = _norm_rgst(rgst_raw)
+                        row = [
+                            it.findtext("aptNm") or "",
+                            it.findtext("aptDong") or _find_text(it, ["aptDong", "단지동", "동", "apt_dong"]),
+                            it.findtext("excluUseAr") or "",
+                            trade_date,
+                            amount_norm,
+                            it.findtext("floor") or "",
+                            it.findtext("buildYear") or "",
+                            it.findtext("umdNm") or "",
+                            it.findtext("jibun") or "",
+                            it.findtext("sggCd") or "",
+                            (it.findtext("dealingGbn") or _find_text(it, ["tradeType", "거래유형", "dealType", "dealingGbn"])),
+                            (it.findtext("estateAgentSggNm") or _find_text(it, ["bcnstAddr", "brokerAddr", "중개사소재지", "bcnstc", "estateAgentSggNm"])),
+                            rgst_norm,
+                            (it.findtext("slerGbn") or _find_text(it, ["seller", "거래주체정보_매도자", "매도자", "tradePartSeller", "slerGbn"])),
+                            _find_text(it, ["buyer", "거래주체정보_매수자", "매수자", "tradePartBuyer"]),
+                            _find_text(it, ["rentYn", "토지임대부", "landLease", "isLandLeaseApt"]),
+                        ]
+                        # pad trade rows with empty rent-related columns to keep column alignment
+                        try:
+                            row.insert(5, "")
+                        except Exception:
+                            pass
+                        row.extend(["", "", "", "", ""])  # 계약기간, ContractType, 갱신권사용, 종전보증금, 종전월세
+                        rows.append(row)
+                    # if fewer than page size, no more pages
+                    if len(items) < 1000:
+                        break
+                    page += 1
                 # if rent data requested, also call rent API for same lawd/ym
                 if getattr(self, 'include_rent', False):
                     try:
                         url_r = "https://apis.data.go.kr/1613000/RTMSDataSvcAptRent/getRTMSDataSvcAptRent"
-                        params_r = {
-                            "serviceKey": requests.utils.unquote(self.service_key),
-                            "LAWD_CD": lawd,
-                            "DEAL_YMD": ym,
-                            "pageNo": "1",
-                            "numOfRows": "1000",
-                        }
-                        resp_r = requests.get(url_r, params=params_r, timeout=30, headers=headers)
-                        resp_r.raise_for_status()
-                        # parse rent XML
-                        try:
-                            root_r = ET.fromstring(resp_r.content)
-                            items_r = root_r.findall("body/items/item")
-                        except Exception:
-                            items_r = []
-                        for it2 in items_r:
-                            # rent items may use different tag names; use _find_text to discover
-                            trade_date_r = f"{it2.findtext('dealYear') or ''}-{it2.findtext('dealMonth') or ''}-{it2.findtext('dealDay') or ''}"
-                            # deposit(보증금) -> 거래금액, monthlyRent -> 월세(만원)
-                            raw_deposit = _find_text(it2, ["deposit", "보증금", "전세금", "rentMoney", "depositAmount"]) or ""
-                            deposit_norm = _norm_amount(raw_deposit)
-                            raw_month = _find_text(it2, ["monthlyRent", "월세", "rentFee"]) or ""
-                            month_norm = _norm_amount(raw_month)
-                            rgst_raw_r = _find_text(it2, ["rgstDate", "등기일자", "registrationDate"]) or ""
-                            rgst_norm_r = _norm_rgst(rgst_raw_r)
-                            # additional rent-specific fields
-                            contract_term = _find_text(it2, ["contractTerm", "계약기간"]) or ""
-                            contract_type = _find_text(it2, ["contractType", "ContractType"]) or ""
-                            use_rr = _find_text(it2, ["useRRRight", "갱신권사용"]) or ""
-                            pre_deposit = _find_text(it2, ["preDeposit", "종전보증금"]) or ""
-                            pre_month = _find_text(it2, ["preMonthlyRent", "종전월세"]) or ""
-
-                            row_r = [
-                                it2.findtext("aptNm") or _find_text(it2, ["aptName", "단지명"]),
-                                it2.findtext("aptDong") or _find_text(it2, ["aptDong", "동"]),
-                                it2.findtext("excluUseAr") or _find_text(it2, ["excluUseAr", "전용면적"]),
-                                trade_date_r,
-                                deposit_norm,
-                                it2.findtext("floor") or _find_text(it2, ["floor", "층"]),
-                                it2.findtext("buildYear") or _find_text(it2, ["buildYear", "건축년도"]),
-                                it2.findtext("umdNm") or _find_text(it2, ["umdNm", "법정동"]),
-                                it2.findtext("jibun") or _find_text(it2, ["jibun", "지번"]),
-                                it2.findtext("sggCd") or _find_text(it2, ["sggCd", "지역코드"]),
-                                # 거래유형: 전월세 구분
-                                (it2.findtext("dealingGbn") or _find_text(it2, ["tradeType", "거래유형", "dealType"])) or "전월세",
-                                _find_text(it2, ["estateAgentSggNm", "중개사소재지"]),
-                                rgst_norm_r,
-                                _find_text(it2, ["slerGbn", "seller"]),
-                                _find_text(it2, ["buyer", "매수자"]),
-                                _find_text(it2, ["rentYn", "토지임대부"]),
-                            ]
-                            # insert 월세 value at index 5 (between 거래금액 and 층), then append remaining rent-specific columns
+                        page_r = 1
+                        while True:
+                            if getattr(self, '_stop', False):
+                                self.error.emit('취소됨')
+                                return
+                            params_r = {
+                                "serviceKey": requests.utils.unquote(self.service_key),
+                                "LAWD_CD": lawd,
+                                "DEAL_YMD": ym,
+                                "pageNo": str(page_r),
+                                "numOfRows": "1000",
+                            }
                             try:
-                                row_r.insert(5, month_norm)
+                                resp_r = requests.get(url_r, params=params_r, timeout=30, headers=headers)
+                                resp_r.raise_for_status()
                             except Exception:
-                                # if insert fails, append at end
-                                row_r.append(month_norm)
-                            row_r.extend([contract_term, contract_type, use_rr, pre_deposit, pre_month])
-                            rows.append(row_r)
+                                break
+                            # parse rent XML
+                            try:
+                                root_r = ET.fromstring(resp_r.content)
+                                items_r = root_r.findall("body/items/item")
+                            except Exception:
+                                items_r = []
+                            if not items_r:
+                                break
+                            for it2 in items_r:
+                                # rent items may use different tag names; use _find_text to discover
+                                trade_date_r = f"{it2.findtext('dealYear') or ''}-{it2.findtext('dealMonth') or ''}-{it2.findtext('dealDay') or ''}"
+                                # deposit(보증금) -> 거래금액, monthlyRent -> 월세(만원)
+                                raw_deposit = _find_text(it2, ["deposit", "보증금", "전세금", "rentMoney", "depositAmount"]) or ""
+                                deposit_norm = _norm_amount(raw_deposit)
+                                raw_month = _find_text(it2, ["monthlyRent", "월세", "rentFee"]) or ""
+                                month_norm = _norm_amount(raw_month)
+                                rgst_raw_r = _find_text(it2, ["rgstDate", "등기일자", "registrationDate"]) or ""
+                                rgst_norm_r = _norm_rgst(rgst_raw_r)
+                                # additional rent-specific fields
+                                contract_term = _find_text(it2, ["contractTerm", "계약기간"]) or ""
+                                contract_type = _find_text(it2, ["contractType", "ContractType"]) or ""
+                                use_rr = _find_text(it2, ["useRRRight", "갱신권사용"]) or ""
+                                pre_deposit = _find_text(it2, ["preDeposit", "종전보증금"]) or ""
+                                pre_month = _find_text(it2, ["preMonthlyRent", "종전월세"]) or ""
+
+                                row_r = [
+                                    it2.findtext("aptNm") or _find_text(it2, ["aptName", "단지명"]),
+                                    it2.findtext("aptDong") or _find_text(it2, ["aptDong", "동"]),
+                                    it2.findtext("excluUseAr") or _find_text(it2, ["excluUseAr", "전용면적"]),
+                                    trade_date_r,
+                                    deposit_norm,
+                                    it2.findtext("floor") or _find_text(it2, ["floor", "층"]),
+                                    it2.findtext("buildYear") or _find_text(it2, ["buildYear", "건축년도"]),
+                                    it2.findtext("umdNm") or _find_text(it2, ["umdNm", "법정동"]),
+                                    it2.findtext("jibun") or _find_text(it2, ["jibun", "지번"]),
+                                    it2.findtext("sggCd") or _find_text(it2, ["sggCd", "지역코드"]),
+                                    # 거래유형: 전월세 구분
+                                    (it2.findtext("dealingGbn") or _find_text(it2, ["tradeType", "거래유형", "dealType"])) or "전월세",
+                                    _find_text(it2, ["estateAgentSggNm", "중개사소재지"]),
+                                    rgst_norm_r,
+                                    _find_text(it2, ["slerGbn", "seller"]),
+                                    _find_text(it2, ["buyer", "매수자"]),
+                                    _find_text(it2, ["rentYn", "토지임대부"]),
+                                ]
+                                # insert 월세 value at index 5 (between 거래금액 and 층), then append remaining rent-specific columns
+                                try:
+                                    row_r.insert(5, month_norm)
+                                except Exception:
+                                    # if insert fails, append at end
+                                    row_r.append(month_norm)
+                                row_r.extend([contract_term, contract_type, use_rr, pre_deposit, pre_month])
+                                rows.append(row_r)
+                            # if fewer than page size, done
+                            if len(items_r) < 1000:
+                                break
+                            page_r += 1
                     except Exception:
                         # ignore rent errors per-month and continue
                         pass
