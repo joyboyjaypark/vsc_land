@@ -515,6 +515,63 @@ class VWorldAdmCodeGUI(QWidget):
         self.btn_ind_list = QPushButton("리스트받기")
         self.btn_ind_list.clicked.connect(self.on_ind_list)
         ind_layout.addWidget(self.btn_ind_list, 2, 0)
+        # Combo to list indicator items in format '지표명_통계표명'
+        self.ind_combo = QComboBox()
+        self.ind_combo.setEditable(False)
+        try:
+            self.ind_combo.setMaxVisibleItems(20)
+        except Exception:
+            pass
+        # Use a custom delegate to render HTML so parts can be colored differently
+        try:
+            from PyQt5.QtWidgets import QStyledItemDelegate
+            from PyQt5.QtGui import QTextDocument
+            from PyQt5.QtCore import QSize, QRectF
+
+            class HTMLDelegate(QStyledItemDelegate):
+                def paint(self, painter, option, index):
+                    try:
+                        html = index.data(Qt.UserRole) or index.data(Qt.DisplayRole) or ''
+                        doc = QTextDocument()
+                        doc.setDefaultFont(option.font)
+                        doc.setHtml(html)
+                        painter.save()
+                        painter.translate(option.rect.topLeft())
+                        clip = QRectF(0, 0, option.rect.width(), option.rect.height())
+                        doc.drawContents(painter, clip)
+                        painter.restore()
+                    except Exception:
+                        super().paint(painter, option, index)
+
+                def sizeHint(self, option, index):
+                    try:
+                        html = index.data(Qt.UserRole) or index.data(Qt.DisplayRole) or ''
+                        doc = QTextDocument()
+                        doc.setDefaultFont(option.font)
+                        doc.setHtml(html)
+                        w = option.rect.width() if option.rect.width() > 0 else doc.idealWidth()
+                        doc.setTextWidth(w)
+                        h = int(doc.size().height())
+                        return QSize(int(doc.idealWidth()), h)
+                    except Exception:
+                        return super().sizeHint(option, index)
+
+            self.ind_combo.setItemDelegate(HTMLDelegate(self.ind_combo))
+        except Exception:
+            pass
+        ind_layout.addWidget(self.ind_combo, 2, 1, 1, 2)
+        # read-only text field to display selected 통계표코드
+        self.ind_code_display = QLineEdit()
+        try:
+            self.ind_code_display.setReadOnly(True)
+        except Exception:
+            pass
+        ind_layout.addWidget(self.ind_code_display, 2, 3)
+        # connect selection change
+        try:
+            self.ind_combo.currentIndexChanged.connect(self.on_ind_select)
+        except Exception:
+            pass
         # 결과 테이블
         self.ind_table = QTableWidget()
         self.ind_table.setColumnCount(0)
@@ -1103,8 +1160,73 @@ class VWorldAdmCodeGUI(QWidget):
             QMessageBox.critical(self, "파싱 오류", f"응답 XML 파싱 실패:\n{e}")
             return
 
-        # Try common item containers
-        items = root.findall('.//item') or root.findall('.//list') or root.findall('.//row') or []
+        # Prepare indicator combo entries
+        self.ind_combo.clear()
+        # mapping index -> 통계표코드
+        self.ind_index_to_code = {}
+
+        # Prefer top-level '지표' nodes which contain '통계표' children
+        items = []
+        ind_nodes = root.findall('.//지표') or root.findall('.//indicator') or []
+        entries = []
+        if ind_nodes:
+            for node in ind_nodes:
+                title = (node.findtext('지표명') or '').strip()
+                # Prefer to extract 수정일 from the parent 지표 node (applies to all its 통계표)
+                parent_upd = (node.findtext('수치수정일') or node.findtext('수정일') or node.findtext('수정Dt') or node.findtext('수치수정일자') or node.findtext('lastUpdDt') or node.findtext('updateDate') or node.findtext('dataUpdtDt') or '') or ''
+                parent_upd = (parent_upd or '').strip()
+                # find 통계표 children
+                tnodes = node.findall('.//통계표') or node.findall('.//table') or []
+                if not tnodes:
+                    # sometimes 통계표 may be direct children with different tags
+                    for child in list(node):
+                        if '통계' in (child.tag or '') or 'table' in (child.tag or ''):
+                            tnodes.append(child)
+                for t in tnodes:
+                    tname = (t.findtext('통계표명') or t.findtext('tableName') or '').strip()
+                    if title and tname:
+                        # determine 통계표코드 for this table and 지표코드 from parent
+                        tcode = (t.findtext('통계표코드') or t.findtext('통계표코') or t.findtext('tableCode') or '').strip()
+                        ixcode = (node.findtext('지표코드') or node.findtext('지표코') or node.findtext('지표코드') or node.findtext('INDEX_CODE') or '').strip()
+                        # prefer parent 수정일; fall back to table-level if parent missing
+                        upd = parent_upd or (t.findtext('수치수정일') or t.findtext('수정일') or t.findtext('수정Dt') or t.findtext('수치수정일자') or t.findtext('lastUpdDt') or t.findtext('updateDate') or t.findtext('dataUpdtDt') or '') or ''
+                        upd = (upd or '').strip()
+                        # compute sortable key (YYYYMMDD int) else 0
+                        try:
+                            import re
+                            m = re.search(r'(\d{4})[^\d]?(\d{2})[^\d]?(\d{2})', upd)
+                            if m:
+                                key = int(m.group(1) + m.group(2) + m.group(3))
+                            else:
+                                m2 = re.search(r'(\d{8})', upd)
+                                key = int(m2.group(1)) if m2 else 0
+                        except Exception:
+                            key = 0
+                        entries.append((f"{title}_{tname}_{upd}".strip('_'), ixcode, tcode, upd, key))
+            # expose the 지표 nodes as items for later table population
+            items = ind_nodes
+        else:
+            # Try common item containers
+            items = root.findall('.//item') or root.findall('.//list') or root.findall('.//row') or []
+            for it in items:
+                title = (it.findtext('지표명') or it.findtext('STAT_NAME') or it.findtext('INDEX_NAME') or '').strip()
+                tname = (it.findtext('통계표명') or it.findtext('tableName') or '').strip()
+                tcode = (it.findtext('통계표코드') or it.findtext('통계표코') or it.findtext('tableCode') or '').strip()
+                ixcode = (it.findtext('지표코드') or it.findtext('지표코') or it.findtext('INDEX_CODE') or '').strip()
+                if title and tname:
+                    upd = (it.findtext('수치수정일') or it.findtext('수정일') or it.findtext('수정Dt') or it.findtext('수치수정일자') or it.findtext('lastUpdDt') or it.findtext('updateDate') or it.findtext('dataUpdtDt') or '') or ''
+                    upd = (upd or '').strip()
+                    try:
+                        import re
+                        m = re.search(r'(\d{4})[^\d]?(\d{2})[^\d]?(\d{2})', upd)
+                        if m:
+                            key = int(m.group(1) + m.group(2) + m.group(3))
+                        else:
+                            m2 = re.search(r'(\d{8})', upd)
+                            key = int(m2.group(1)) if m2 else 0
+                    except Exception:
+                        key = 0
+                    entries.append((f"{title}_{tname}_{upd}".strip('_'), ixcode, tcode, upd, key))
 
         # If none found, search for a parent with repeated child tags
         if not items:
@@ -1157,10 +1279,62 @@ class VWorldAdmCodeGUI(QWidget):
                 txt = (txt or '').strip()
                 self.ind_table.setItem(r, c, QTableWidgetItem(txt))
 
-        # 자동으로 첫 항목의 세부목록도 불러오도록 (있다면)
+        # sort entries by 수정일 (key at index 4) descending, then populate ind_combo
         try:
-            if self.bok_combo.count() > 0:
-                QTimer.singleShot(200, lambda: self.on_bok_select())
+            entries.sort(key=lambda x: (x[4] if (isinstance(x, (list, tuple)) and len(x) > 4) else 0), reverse=True)
+        except Exception:
+            pass
+
+        # populate ind_combo: insert a leading empty selection so the first real item
+        # is not auto-selected when the list is refreshed.
+        try:
+            # add empty first choice
+            self.ind_combo.addItem("")
+            # add real entries starting from index 1
+            for offset, e in enumerate(entries, start=1):
+                try:
+                    if isinstance(e, (list, tuple)) and len(e) >= 3:
+                        label, ixcode, tcode = e[0], e[1], e[2]
+                    elif isinstance(e, (list, tuple)) and len(e) == 2:
+                        label, tcode = e
+                        ixcode = ''
+                    else:
+                        label = str(e)
+                        ixcode = ''
+                        tcode = ''
+                    # store plain display text, and also store an HTML-rendered version in UserRole
+                    self.ind_combo.addItem(label)
+                    try:
+                        # try to split label into title, tname, upd (rsplit to allow underscores in title)
+                        parts = label.rsplit('_', 2)
+                        if len(parts) == 3:
+                            title_part, tname_part, upd_part = parts
+                        elif len(parts) == 2:
+                            title_part, tname_part = parts
+                            upd_part = ''
+                        else:
+                            title_part = parts[0] if parts else ''
+                            tname_part = ''
+                            upd_part = ''
+                        # build HTML: title (black) _ tname (red) _ upd (black)
+                        esc = lambda s: (s or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                        html = f"<span style='color:black'>{esc(title_part)}</span>_" \
+                               f"<span style='color:red'>{esc(tname_part)}</span>_" \
+                               f"<span style='color:black'>{esc(upd_part)}</span>"
+                        self.ind_combo.setItemData(offset, html, Qt.UserRole)
+                    except Exception:
+                        pass
+                    # store both codes at the shifted index
+                    self.ind_index_to_code[offset] = (ixcode, tcode)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # ensure the blank first item is selected
+        try:
+            if self.ind_combo.count() > 0:
+                self.ind_combo.setCurrentIndex(0)
         except Exception:
             pass
 
@@ -1180,6 +1354,167 @@ class VWorldAdmCodeGUI(QWidget):
             self.kostat_table.setItem(0, 0, QTableWidgetItem("통계청 API 호출 로직을 구현하세요."))
         except Exception:
             pass
+
+    def on_ind_select(self, idx):
+        # display mapped codes and fetch stats detail to populate table
+        try:
+            pair = self.ind_index_to_code.get(idx, ('', ''))
+            ixcode, statscode = pair if isinstance(pair, (list, tuple)) else ('','')
+        except Exception:
+            ixcode, statscode = '',''
+        try:
+            # show 통계표코드 in the display field (and also show ixcode prefix)
+            self.ind_code_display.setText(f"ix:{ixcode} stats:{statscode}" if (ixcode or statscode) else '')
+        except Exception:
+            pass
+
+        # If both codes present, call the 상세 API and populate ind_table
+        if ixcode and statscode:
+            try:
+                # Build URL and request
+                base = "https://www.index.go.kr/unity/openApi/stblUserShow.do"
+                params = {
+                    'idntfcId': self.edit_ind_key.text().strip() if getattr(self, 'edit_ind_key', None) else 'H4T022E22214155B',
+                    'ixCode': ixcode,
+                    'statsCode': statscode,
+                }
+                resp = requests.get(base, params=params, timeout=20)
+                resp.raise_for_status()
+                data = resp.content
+            except Exception as e:
+                try:
+                    QMessageBox.critical(self, "요청 실패", f"세부 API 요청 실패:\n{e}")
+                except Exception:
+                    pass
+                return
+
+            try:
+                root = ET.fromstring(data)
+            except Exception as e:
+                # Attempt HTML-table fallback quietly (no dialogs, no raw-file saving)
+                try:
+                    text = resp.text if hasattr(resp, 'text') else (data.decode('utf-8', errors='replace') if isinstance(data, (bytes, bytearray)) else str(data))
+                    parsed_rows = None
+                    # Try BeautifulSoup if available
+                    try:
+                        from bs4 import BeautifulSoup
+                        soup = BeautifulSoup(text, 'html.parser')
+                        table = soup.find('table')
+                        if table:
+                            parsed_rows = []
+                            for tr in table.find_all('tr'):
+                                cols = [td.get_text(strip=True) for td in tr.find_all(['th', 'td'])]
+                                parsed_rows.append(cols)
+                    except Exception:
+                        parsed_rows = None
+
+                    # Regex fallback without writing files or showing dialogs
+                    if parsed_rows is None:
+                        import re, html
+                        m = re.search(r'<table.*?>(.*?)</table>', text, re.S | re.I)
+                        if m:
+                            tbl = m.group(0)
+                            trs = re.findall(r'<tr.*?>(.*?)</tr>', tbl, re.S | re.I)
+                            rows = []
+                            for tr in trs:
+                                tds = re.findall(r'<t[dh].*?>(.*?)</t[dh]>', tr, re.S | re.I)
+                                clean = [re.sub(r'<.*?>', '', td).strip() for td in tds]
+                                clean = [html.unescape(c) for c in clean]
+                                rows.append(clean)
+                            if rows:
+                                parsed_rows = rows
+
+                    if parsed_rows:
+                        maxc = max((len(r) for r in parsed_rows), default=0)
+                        if maxc > 0:
+                            first = parsed_rows[0]
+                            if all(cell for cell in first):
+                                headers = first
+                                data_rows = parsed_rows[1:]
+                            else:
+                                headers = [f'col{i+1}' for i in range(maxc)]
+                                data_rows = parsed_rows
+
+                            try:
+                                self.ind_table.setColumnCount(maxc)
+                                self.ind_table.setHorizontalHeaderLabels(headers)
+                                self.ind_table.setRowCount(len(data_rows))
+                                for r, row in enumerate(data_rows):
+                                    for c in range(maxc):
+                                        val = row[c] if c < len(row) else ''
+                                        self.ind_table.setItem(r, c, QTableWidgetItem(val))
+                            except Exception:
+                                pass
+                        return
+                except Exception:
+                    pass
+
+                # Quiet failure: update status_label if available, but do not show dialogs
+                try:
+                    if hasattr(self, 'status_label') and self.status_label is not None:
+                        self.status_label.setText('세부 API 파싱 실패')
+                except Exception:
+                    pass
+                return
+
+            # find repeated item nodes and build table similar to on_ind_list
+            items = root.findall('.//item') or root.findall('.//list') or root.findall('.//row') or []
+            if not items:
+                for parent in root.iter():
+                    child_tags = [c.tag for c in list(parent) if c.tag]
+                    if not child_tags:
+                        continue
+                    from collections import Counter
+                    cnt = Counter(child_tags)
+                    most_common_tag, count = cnt.most_common(1)[0]
+                    if count > 1:
+                        items = parent.findall(most_common_tag)
+                        if items:
+                            break
+
+            if not items:
+                cols = [c.tag for c in list(root)]
+                rows = [[(c.text or '').strip() if c is not None and c.text else '' for c in list(root)]] if cols else []
+                if not rows:
+                    try:
+                        QMessageBox.information(self, "결과 없음", "조회된 세부 항목이 없습니다.")
+                    except Exception:
+                        pass
+                    return
+                # populate table with single row
+                try:
+                    self.ind_table.setColumnCount(len(cols))
+                    self.ind_table.setHorizontalHeaderLabels(cols)
+                    self.ind_table.setRowCount(len(rows))
+                    for r, row in enumerate(rows):
+                        for c, val in enumerate(row):
+                            self.ind_table.setItem(r, c, QTableWidgetItem(val))
+                except Exception:
+                    pass
+                return
+
+            # Build column set from all items' child tags
+            col_set = []
+            for it in items:
+                for child in list(it):
+                    if child.tag not in col_set:
+                        col_set.append(child.tag)
+
+            # populate rows
+            try:
+                self.ind_table.setColumnCount(len(col_set))
+                self.ind_table.setHorizontalHeaderLabels(col_set)
+                self.ind_table.setRowCount(len(items))
+                for r, it in enumerate(items):
+                    for c, tag in enumerate(col_set):
+                        try:
+                            txt = it.findtext(tag) or ''
+                        except Exception:
+                            txt = ''
+                        txt = (txt or '').strip()
+                        self.ind_table.setItem(r, c, QTableWidgetItem(txt))
+            except Exception:
+                pass
 
     def _load_stat_item_list(self, stat_code):
         if not stat_code:
